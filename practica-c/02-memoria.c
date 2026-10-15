@@ -17,15 +17,26 @@
 /* 1. Devuelve una copia en el heap de los n enteros de src.
  *    Si n == 0 devuelve NULL. El que llama debe liberar con free(). */
 int *copiar_arreglo(const int *src, size_t n) {
-    /* TODO */
-    return NULL;
+    if (n == 0) return NULL;
+    int *p = malloc(n * sizeof(*p));
+    for (size_t i = 0; i < n; i++) {
+        *(p + i) = *(src + i);
+    }
+    return p;
 }
 
 /* 2. Devuelve un bloque nuevo con los na enteros de a seguidos de los
  *    nb de b. Si na + nb == 0 devuelve NULL. El que llama libera. */
 int *concatenar(const int *a, size_t na, const int *b, size_t nb) {
-    /* TODO */
-    return NULL;
+    if (na + nb == 0) return NULL;
+    int *p = malloc((na + nb) * sizeof(*p));
+    for (size_t i = 0; i < na; i++) {
+        *(p + i) = *(a + i);
+    }
+    for (size_t i = 0; i < nb; i++) {
+        *(p + na + i) = *(b + i);
+    }
+    return p;
 }
 
 /* 3. Devuelve una cadena nueva con s repetida 'veces' veces.
@@ -33,21 +44,52 @@ int *concatenar(const int *a, size_t na, const int *b, size_t nb) {
  *    Si veces <= 0 devuelve una cadena vacia "" (igual hay que liberarla).
  *    El resultado debe terminar en '\0'. El que llama libera. */
 char *repetir(const char *s, int veces) {
-    /* TODO */
-    return NULL;
+    char *vacia = malloc(1);
+    if (vacia == NULL) return NULL;
+    vacia[0] = '\0';
+    if (veces <= 0) return vacia;
+    int cant_chars = 0;
+    while (*(s + cant_chars) != '\0') {
+        cant_chars++;
+    }
+    if (cant_chars == 0) return vacia;
+    char *p = malloc(cant_chars * veces + 1);
+    int desplazamiento = 0;
+    for (int i = 0; i < veces; i++) {
+        for (int v = 0; v < cant_chars; v++) {
+            *(p + v + desplazamiento) = *(s + v);
+        }
+        desplazamiento += cant_chars;
+    }
+    *(p + veces * cant_chars) = '\0'; 
+    return p;
 }
 
 /* 4. Reserva una matriz de filas x columnas inicializada en ceros, como
  *    un arreglo de punteros a filas. Acceso: m[i][j].
  *    Si alguna reserva falla, libere lo ya reservado y devuelva NULL. */
 int **crear_matriz(size_t filas, size_t cols) {
-    /* TODO */
-    return NULL;
+    int **puntero_principal = malloc(filas * sizeof(*puntero_principal));
+    if (puntero_principal == NULL) return NULL;
+    for (int i = 0; i < filas; i++) {
+        int *p = calloc(cols, sizeof(*p));
+        if (p == NULL) {
+            for (size_t j = 0; j < i; j++) free(*(puntero_principal + j));
+            free(puntero_principal);
+            return NULL;
+        }
+        *(puntero_principal + i) = p;
+    }
+    return puntero_principal;
 }
 
 /* 5. Libera una matriz creada por crear_matriz. Debe tolerar m == NULL. */
 void liberar_matriz(int **m, size_t filas) {
-    /* TODO */
+    if (m == NULL) return;
+    for (int i = 0; i < filas; i++) {
+        free(*(m + i));
+    }
+    free(m);
 }
 
 /* 6. Arreglo dinamico que crece solo.
