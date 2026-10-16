@@ -16,48 +16,49 @@
 
 /* 1. Devuelve v con el bit i puesto en 1. */
 unsigned poner_bit(unsigned v, int i) {
-    /* TODO */
-    return v;
+    return v | (1u << i);
 }
 
 /* 2. Devuelve v con el bit i puesto en 0. */
 unsigned quitar_bit(unsigned v, int i) {
-    /* TODO */
-    return v;
+    return v & ~(1u << i);
 }
 
 /* 3. Devuelve v con el bit i invertido. */
 unsigned alternar_bit(unsigned v, int i) {
-    /* TODO */
-    return v;
+    return v ^ (1u << i);
 }
 
 /* 4. Devuelve 1 si el bit i esta encendido, 0 si no.
  *    Ojo: debe devolver exactamente 1, no cualquier valor distinto de 0. */
 int leer_bit(unsigned v, int i) {
-    /* TODO */
-    return 0;
+    return (int)((v >> i) & 1u);
 }
 
 /* 5. Cuenta cuantos bits en 1 tiene v. */
 int contar_bits(unsigned v) {
-    /* TODO */
-    return 0;
+    int contador = 0;
+    for (; v != 0; v >>= 1) {
+        if (v & 1u) contador++;
+    }
+    return contador;
 }
 
 /* 6. Invierte el orden de los 2 bytes. Esto es exactamente lo que hay que
  *    hacer para pasar de orden de red (big endian) a orden de maquina.
  *    0x1234 -> 0x3412 */
 uint16_t voltear16(uint16_t v) {
-    /* TODO */
-    return v;
+    return (uint16_t)((v >> 8) | (v << 8));
 }
 
 /* 7. Lo mismo con 4 bytes.
  *    0x11223344 -> 0x44332211 */
 uint32_t voltear32(uint32_t v) {
-    /* TODO */
-    return v;
+    uint16_t a = (uint16_t)(v >> 16);
+    uint16_t b = (uint16_t)v;
+    a = voltear16(a);
+    b = voltear16(b);
+    return ((uint32_t)b << 16) | a;
 }
 
 /* 8. Extrae 'cantidad' bits de v empezando en el bit 'desde', y los
@@ -66,16 +67,15 @@ uint32_t voltear32(uint32_t v) {
  *
  *    extraer(0b11010110, 1, 3) -> los bits 1,2,3 -> 0b011 -> 3 */
 unsigned extraer_campo(unsigned v, int desde, int cantidad) {
-    /* TODO */
-    return 0;
+    return (v >> desde) & ((1u << cantidad) - 1u);
 }
 
 /* 9. Devuelve v con esos 'cantidad' bits a partir de 'desde' reemplazados
  *    por los bits bajos de 'nuevo'. El resto de v no cambia.
  *    Asuma 1 <= cantidad <= 16. */
 unsigned poner_campo(unsigned v, int desde, int cantidad, unsigned nuevo) {
-    /* TODO */
-    return v;
+    unsigned mascara = ((1u << cantidad) - 1u) << desde;
+    return (v & ~mascara) | ((nuevo << desde) & mascara);
 }
 
 /* ------------------------- pruebas ------------------------- */

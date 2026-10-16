@@ -25,14 +25,15 @@ typedef struct {
 
 /* 1. Devuelve un Punto nuevo con la suma. No modifica a ni b. */
 Punto sumar(Punto a, Punto b) {
-    /* TODO */
-    Punto r = {0, 0};
+    Punto r = {a.x + b.x, a.y + b.y};
     return r;
 }
 
 /* 2. Mueve el punto apuntado por p. Tolera p == NULL. */
 void mover(Punto *p, int dx, int dy) {
-    /* TODO */
+    if (p == NULL) return;
+    p->x += dx;
+    p->y += dy;
 }
 
 /* 3. Agrega valor AL FINAL de la lista.
@@ -40,19 +41,30 @@ void mover(Punto *p, int dx, int dy) {
  *    Si cabeza es NULL, la lista nueva es el nodo creado.
  *    Devuelve la cabeza original si falla malloc. */
 Nodo *lista_agregar(Nodo *cabeza, int valor) {
-    /* TODO */
+    Nodo *nuevo = malloc(sizeof(*cabeza));
+    if (nuevo == NULL) return cabeza;
+    nuevo->valor = valor;
+    nuevo->sig = NULL;
+    if (cabeza == NULL) return nuevo;
+    Nodo *actual = cabeza;
+    while (actual->sig != NULL) actual = actual->sig;
+    actual->sig = nuevo;
     return cabeza;
 }
 
 /* 4. Cuenta los nodos. Lista vacia -> 0. */
 size_t lista_largo(const Nodo *cabeza) {
-    /* TODO */
-    return 0;
+    size_t contador = 0;
+    for (const Nodo *actual = cabeza; actual != NULL; actual = actual->sig)
+        contador++;
+    return contador;
 }
 
 /* 5. Devuelve el PRIMER nodo cuyo valor sea 'valor', o NULL si no esta. */
 Nodo *lista_buscar(Nodo *cabeza, int valor) {
-    /* TODO */
+    if (cabeza == NULL) return NULL;
+    for (const Nodo *actual = cabeza; actual != NULL; actual = actual->sig)
+        if (actual->valor == valor) return actual;
     return NULL;
 }
 
@@ -60,7 +72,19 @@ Nodo *lista_buscar(Nodo *cabeza, int valor) {
  *    Recibe Nodo** porque puede tener que cambiar la cabeza.
  *    Devuelve 1 si elimino algo, 0 si no lo encontro. */
 int lista_eliminar(Nodo **cabeza, int valor) {
-    /* TODO */
+    if (*cabeza == NULL) return 0;
+    Nodo *actual = *cabeza;
+    Nodo *anterior;
+    while (actual != NULL) {
+        if (actual->valor == valor) {
+            if (actual == *cabeza) *cabeza = actual->sig;
+            else anterior->sig = actual->sig;
+            free(actual);
+            return 1;
+        }
+        anterior = actual;
+        actual = actual->sig;
+    }
     return 0;
 }
 
