@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include <strings.h>
 
+#include <netdb.h>
+#include <unistd.h>
 #include <sys/types.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -48,16 +50,77 @@ char *extraer_dominio(char *buffer) {
     return dominio;
 }
 
-void procesar(char *buffer, int n) {
-    bool qr = ((buffer[2] >> 7) & 1) == 1;
-    uint8_t op_code = (buffer[2] >> 3) & 15;
-    if (!qr && op_code == 0) {
-        // Extraer dominio de la solicitud
-        // Consultar ip to country
-        printf("Es estandar query.\n");
-    } else {
-        printf("No estandar query.\n");
+/* Hace un GET a http://host:puerto{ruta} y devuelve SOLO el cuerpo
+ * de la respuesta, reservado con malloc (el que llama libera con free()).
+ * Devuelve NULL si algo falla. */
+char *http_get(const char *host, const char *puerto, const char *ruta) {
+    struct addrinfo hints = {0}, *resultado;
+    hints.ai_family   = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    if (getaddrinfo(host, puerto, &hints, &resultado) != 0) {
+        fprintf(stderr, "no se pudo resolver %s\n", host);
+        return NULL;
     }
+
+    int sockfd = socket(resultado->ai_family, resultado->ai_socktype, 0);
+    if (sockfd < 0 || connect(sockfd, resultado->ai_addr, resultado->ai_addrlen) < 0) {
+        perror("connect");
+        freeaddrinfo(resultado);
+        return NULL;
+    }
+    freeaddrinfo(resultado);
+
+    char peticion[512];
+    int largo = snprintf(peticion, sizeof(peticion),
+        "GET %s HTTP/1.1\r\n"
+        "Host: %s\r\n"
+        "Connection: close\r\n"
+        "\r\n",
+        ruta, host);
+
+    if (send(sockfd, peticion, (size_t)largo, 0) < 0) {
+        perror("send");
+        close(sockfd);
+        return NULL;
+    }
+
+    size_t cap = 4096, total = 0;
+    char  *crudo = malloc(cap);
+    if (!crudo) { close(sockfd); return NULL; }
+
+    ssize_t n;
+    while ((n = recv(sockfd, crudo + total, cap - total, 0)) > 0) {
+        total += (size_t)n;
+        if (total == cap) {
+            cap *= 2;
+            char *tmp = realloc(crudo, cap);
+            if (!tmp) { free(crudo); close(sockfd); return NULL; }
+            crudo = tmp;
+        }
+    }
+    close(sockfd);
+
+    if (n < 0) { free(crudo); perror("recv"); return NULL; }
+    crudo[total] = '\0';
+
+    char *cuerpo = strstr(crudo, "\r\n\r\n");
+    if (!cuerpo) { free(crudo); return NULL; }
+    cuerpo += 4;
+
+    char *resultado_final = strdup(cuerpo);
+    free(crudo);
+    return resultado_final;
+}
+
+char *get(char *ruta, struct sockaddr_in cliaddr) {
+    char ip[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &cliaddr.sin_addr, ip, sizeof(ip));
+    char buffer_ruta[128];
+    snprintf(buffer_ruta, sizeof(buffer_ruta), ruta, ip);
+    // En futuros avances: colocar el dominio al API REST y el puerto como variable de entorno
+    char *json = http_get("api-node.tu-dominio.com", "80", buffer_ruta);
+    return json;
 }
 
 int main() {   
@@ -79,9 +142,25 @@ int main() {
     //receive the datagram
     len = sizeof(cliaddr);
     int n = recvfrom(listenfd, buffer, sizeof(buffer), 0, (struct sockaddr*)&cliaddr,&len); //receive message from server
+    // Imprimir la informacion recibida
     printf("recibidos %d bytes:\n", n);
     imprimir_hex((unsigned char *)buffer, n);
-    procesar(buffer, n);
+    // Obtener el valor de qr y opcode
+    bool qr = ((buffer[2] >> 7) & 1) == 1;
+    uint8_t op_code = (buffer[2] >> 3) & 15;
+    if (!qr && op_code == 0) {
+        char *dominio = extraer_dominio(buffer);
+        printf("%s\n", dominio);
+        // Consultar ip to country
+        char *respuesta = get("/api/ip_country/%s", cliaddr);
+        if (respuesta) {
+            printf("respuesta: %s\n", respuesta);
+            free(respuesta);
+        }
+        printf("Es estandar query.\n");
+    } else {
+        printf("No estandar query.\n");
+    }
          
     // send the response
     //sendto(listenfd, message, strlen(message), 0, (struct sockaddr*)&cliaddr, sizeof(cliaddr));
