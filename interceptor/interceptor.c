@@ -1,11 +1,13 @@
 // Codigo recuperado de: https://www.geeksforgeeks.org/computer-networks/udp-client-server-using-connect-c-implementation/
 // y modificado a necesidad de la implementacion del proyecto 2
 
+#include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
 #include <stdio.h>
 #include <strings.h>
+
 #include <sys/types.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -19,6 +21,31 @@ void imprimir_hex(const unsigned char *buf, int n) {
         if ((i + 1) % 16 == 0) printf("\n");
     }
     printf("\n");
+}
+
+char *extraer_dominio(char *buffer) {
+    static char dominio[256];
+    int indice_buffer = 12;
+    int indice_dominio = 0;
+    int longitud_label = buffer[indice_buffer];
+    int fin;
+    while (buffer[indice_buffer] != 0) {
+        indice_buffer = indice_buffer + 1;
+        fin = indice_buffer + longitud_label;
+        while (indice_buffer < fin) {
+            dominio[indice_dominio] = buffer[indice_buffer];
+            indice_dominio += 1;
+            indice_buffer += 1;
+        }
+        if (buffer[indice_buffer] != 0) {
+            dominio[indice_dominio] = '.';
+            indice_dominio += 1;
+        } else {
+            dominio[indice_dominio] = '\0';
+        }
+        longitud_label = buffer[indice_buffer];
+    }
+    return dominio;
 }
 
 void procesar(char *buffer, int n) {
