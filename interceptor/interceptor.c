@@ -17,7 +17,7 @@
 #define PORT 5000
 #define MAXLINE 1000
 
-// Leer las variables de entorno
+// ---------- Leer las variables de entorno
 static const char *env_texto(const char *nombre, const char *respaldo) {
     const char *v = getenv(nombre);
     return (v && *v) ? v : respaldo;
@@ -36,6 +36,82 @@ static int env_entero(const char *nombre, int respaldo) {
         return respaldo;
     }
     return (int)n;
+}
+// ----------------------------------------
+
+size_t construir_respuesta(char *buffer_solicitud, char *ip, char *buffer_respuesta, size_t max) {
+    size_t longitud_label;
+    size_t i = 12;
+
+    while (buffer_solicitud[i] != '\0') {
+        longitud_label = buffer_solicitud[i];
+        i += longitud_label + 1;
+    }
+
+    i += 5; // Saltarse QTYPE y QCLASS de la Seccion Question
+    // Aca i ya esta al inicio de RR Answer
+    if (i + 16 > max) return 0;
+
+    // ############ Formar la respuesta
+    memcpy(buffer_respuesta, buffer_solicitud, i);
+
+    buffer_respuesta[2] = buffer_respuesta[2] | 0x80; // Cambiar QR a 1 para indicar que es una respuesta
+    buffer_respuesta[3] |= 0x80;      // RA = 1
+    // Poner ANCOUNT en 1
+    buffer_respuesta[6] = 0x00;
+    buffer_respuesta[7] = 0x01;
+    // NSCOUNT en 0
+    buffer_respuesta[8] = 0x00;
+    buffer_respuesta[9] = 0x00;
+    // ARCOUNT en 0
+    buffer_respuesta[10] = 0x00;
+    buffer_respuesta[11] = 0x00;
+
+    // La seccion Question queda igual
+
+    // Pasamos a la seccion RR del Answer
+    // Puntero a la ubicacion del nombre del dominio al que pertenece el RR
+    buffer_respuesta[i] = 0xC0; // Indica que es un puntero
+    i++;
+    buffer_respuesta[i] = 0x0C; // Indica que se encuentra en el offset 12
+    i++;
+
+    // TYPE -> A = 1
+    buffer_respuesta[i] = 0x00;
+    i++;
+    buffer_respuesta[i] = 0x01;
+    i++;
+
+    // CLASS -> IN = 1
+    buffer_respuesta[i] = 0x00;
+    i++;
+    buffer_respuesta[i] = 0x01;
+    i++;
+
+    // TTL -> 300 seg
+    buffer_respuesta[i] = 0x00;
+    i++;
+    buffer_respuesta[i] = 0x00;
+    i++;
+    buffer_respuesta[i] = 0x01;
+    i++;
+    buffer_respuesta[i] = 0x2c;
+    i++;
+
+    // RDLENGHT -> es IPv4 por lo tanto es 4
+    buffer_respuesta[i] = 0x00;
+    i++;
+    buffer_respuesta[i] = 0x04;
+    i++;
+
+    struct in_addr parse_ip;
+    if (inet_pton(AF_INET, ip, &parse_ip) != 1) {
+        return 0;
+    }
+    memcpy(buffer_respuesta + i, &parse_ip.s_addr, 4);
+    i += 4;
+
+    return i;
 }
 
 void imprimir_hex(const unsigned char *buf, int n) {
@@ -155,7 +231,7 @@ char *get_zonal_ip(char *ruta, char *codigo_pais, const char *node_api_host, int
 }
 
 int main() {   
-    char buffer[100];
+    char buffer[512];
     // Leer variables de entorno
     int puerto_dns_interceptor = env_entero("DNS_INTERCEPTOR_PORT", 5000);
     const char *node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
@@ -225,11 +301,15 @@ int main() {
             free(respuesta_zonal_ip);
         }
         printf("IP Zonal Cache: %s\n", ip);
+        // Contruir la respuesta para el DNS Client
+        char respuesta[512];
+        size_t largo_respuesta = construir_respuesta(buffer, ip, respuesta, sizeof(respuesta));
+        // Enviar la respuesta al DNS Client
+        if (largo_respuesta > 0) {
+            sendto(listenfd, respuesta, largo_respuesta, 0, (struct sockaddr*)&cliaddr, sizeof(cliaddr));
+        }
         printf("Es estandar query.\n");
     } else {
         printf("No estandar query.\n");
     }
-         
-    // send the response
-    //sendto(listenfd, message, strlen(message), 0, (struct sockaddr*)&cliaddr, sizeof(cliaddr));
 }
