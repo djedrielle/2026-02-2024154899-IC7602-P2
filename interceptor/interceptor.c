@@ -230,86 +230,94 @@ char *get_zonal_ip(char *ruta, char *codigo_pais, const char *node_api_host, int
     return json;
 }
 
-int main() {   
-    char buffer[512];
+int main() {
     // Leer variables de entorno
     int puerto_dns_interceptor = env_entero("DNS_INTERCEPTOR_PORT", 5000);
     const char *node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
     int node_api_port = env_entero("NODE_API_PORT", 3000);
 
-    int listenfd, len;
-    struct sockaddr_in servaddr, cliaddr;
-    bzero(&servaddr, sizeof(servaddr));
+    int listenfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (listenfd < 0) { perror("socket"); return 1; }
 
-    // Create a UDP Socket
-    listenfd = socket(AF_INET, SOCK_DGRAM, 0);        
+    struct sockaddr_in servaddr = {0};
+    servaddr.sin_family      = AF_INET;
     servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-    servaddr.sin_port = htons(puerto_dns_interceptor);
-    servaddr.sin_family = AF_INET; 
- 
-    // bind server address to socket descriptor
-    bind(listenfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
-     
-    //receive the datagram
-    len = sizeof(cliaddr);
-    int n = recvfrom(listenfd, buffer, sizeof(buffer), 0, (struct sockaddr*)&cliaddr,&len); //receive message from server
-    
-    // Imprimir la informacion recibida
-    printf("recibidos %d bytes:\n", n);
-    imprimir_hex((unsigned char *)buffer, n);
-    
-    // Obtener el valor de qr y opcode
-    bool qr = ((buffer[2] >> 7) & 1) == 1;
-    uint8_t op_code = (buffer[2] >> 3) & 15;
-    
-    if (!qr && op_code == 0) {
-        char *dominio = extraer_dominio(buffer);
-        printf("%s\n", dominio);
-        
-        // %%%%%%%%%%%%%%%%%%%% Consultar ip to country
-        char codigo_pais[3];
-        char *respuesta_ip_to_country = get_ip_to_country("/api/ip_to_country/%s", cliaddr, node_api_host, node_api_port);
-        if (respuesta_ip_to_country) {
-            printf("respuesta codigo pais: %s\n", respuesta_ip_to_country);
-            // Extraer el codigo pais
-            char *p = strstr(respuesta_ip_to_country, "\"pais\":\"");
-            if (p) {
-                p += 8;
-                codigo_pais[0] = p[0];
-                codigo_pais[1] = p[1];
-                codigo_pais[2] = '\0';
-            }
-            free(respuesta_ip_to_country);
-        }
-        printf("Codigo pais: %s\n", codigo_pais);
+    servaddr.sin_port        = htons(puerto_dns_interceptor);
 
-        // %%%%%%%%%%%%%%%%%%%% Consultar la ip del Cache Zonal para un codigo pais
-        char ip[16];
-        char *respuesta_zonal_ip = get_zonal_ip("/api/zonal_ip/%s", codigo_pais, node_api_host, node_api_port);
-        if (respuesta_zonal_ip) {
-            printf("respuesta zonal ip: %s\n", respuesta_zonal_ip);
-            char *p = strstr(respuesta_zonal_ip, "ip_cache");
-            if (p) {
-                p += 11;
-                int i = 0;
-                while (p[i] != '"') {
-                    ip[i] = p[i];
-                    i++;
+    if (bind(listenfd, (struct sockaddr*)&servaddr, sizeof servaddr) < 0) {
+        perror("bind");
+        return 1;
+    }
+    printf("Interceptor escuchando en el puerto %d\n", puerto_dns_interceptor);
+
+    /* --- ciclo de atención --- */
+    char buffer[512];
+    struct sockaddr_in cliaddr;
+
+    while (1) {
+        //receive the datagram
+        socklen_t len = sizeof(cliaddr);          /* se reinicia cada vuelta */
+
+        ssize_t n = recvfrom(listenfd, buffer, sizeof buffer, 0, (struct sockaddr*)&cliaddr, &len);
+        if (n < 0) { perror("recvfrom"); continue; }
+        
+        // Imprimir la informacion recibida
+        printf("recibidos %ld bytes:\n", n);
+        imprimir_hex((unsigned char *)buffer, n);
+        
+        // Obtener el valor de qr y opcode
+        bool qr = ((buffer[2] >> 7) & 1) == 1;
+        uint8_t op_code = (buffer[2] >> 3) & 15;
+        
+        if (!qr && op_code == 0) {
+            char *dominio = extraer_dominio(buffer);
+            printf("%s\n", dominio);
+            
+            // %%%%%%%%%%%%%%%%%%%% Consultar ip to country
+            char codigo_pais[3];
+            char *respuesta_ip_to_country = get_ip_to_country("/api/ip_to_country/%s", cliaddr, node_api_host, node_api_port);
+            if (respuesta_ip_to_country) {
+                printf("respuesta codigo pais: %s\n", respuesta_ip_to_country);
+                // Extraer el codigo pais
+                char *p = strstr(respuesta_ip_to_country, "\"pais\":\"");
+                if (p) {
+                    p += 8;
+                    codigo_pais[0] = p[0];
+                    codigo_pais[1] = p[1];
+                    codigo_pais[2] = '\0';
                 }
-                ip[i] = '\0';
+                free(respuesta_ip_to_country);
             }
-            free(respuesta_zonal_ip);
+            printf("Codigo pais: %s\n", codigo_pais);
+
+            // %%%%%%%%%%%%%%%%%%%% Consultar la ip del Cache Zonal para un codigo pais
+            char ip[16];
+            char *respuesta_zonal_ip = get_zonal_ip("/api/zonal_ip/%s", codigo_pais, node_api_host, node_api_port);
+            if (respuesta_zonal_ip) {
+                printf("respuesta zonal ip: %s\n", respuesta_zonal_ip);
+                char *p = strstr(respuesta_zonal_ip, "ip_cache");
+                if (p) {
+                    p += 11;
+                    int i = 0;
+                    while (p[i] != '"') {
+                        ip[i] = p[i];
+                        i++;
+                    }
+                    ip[i] = '\0';
+                }
+                free(respuesta_zonal_ip);
+            }
+            printf("IP Zonal Cache: %s\n", ip);
+            // Contruir la respuesta para el DNS Client
+            char respuesta[512];
+            size_t largo_respuesta = construir_respuesta(buffer, ip, respuesta, sizeof(respuesta));
+            // Enviar la respuesta al DNS Client
+            if (largo_respuesta > 0) {
+                sendto(listenfd, respuesta, largo_respuesta, 0, (struct sockaddr*)&cliaddr, sizeof(cliaddr));
+            }
+            printf("Es estandar query.\n");
+        } else {
+            printf("No estandar query.\n");
         }
-        printf("IP Zonal Cache: %s\n", ip);
-        // Contruir la respuesta para el DNS Client
-        char respuesta[512];
-        size_t largo_respuesta = construir_respuesta(buffer, ip, respuesta, sizeof(respuesta));
-        // Enviar la respuesta al DNS Client
-        if (largo_respuesta > 0) {
-            sendto(listenfd, respuesta, largo_respuesta, 0, (struct sockaddr*)&cliaddr, sizeof(cliaddr));
-        }
-        printf("Es estandar query.\n");
-    } else {
-        printf("No estandar query.\n");
     }
 }
