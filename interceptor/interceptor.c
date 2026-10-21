@@ -191,11 +191,11 @@ int main() {
         printf("%s\n", dominio);
         
         // %%%%%%%%%%%%%%%%%%%% Consultar ip to country
-        char *respuesta_ip_to_country = get_ip_to_country("/api/ip_to_country/%s", cliaddr, node_api_host, node_api_port);
-        // Extraer el codigo pais
         char codigo_pais[3];
+        char *respuesta_ip_to_country = get_ip_to_country("/api/ip_to_country/%s", cliaddr, node_api_host, node_api_port);
         if (respuesta_ip_to_country) {
             printf("respuesta codigo pais: %s\n", respuesta_ip_to_country);
+            // Extraer el codigo pais
             char *p = strstr(respuesta_ip_to_country, "\"pais\":\"");
             if (p) {
                 p += 8;
@@ -205,14 +205,26 @@ int main() {
             }
             free(respuesta_ip_to_country);
         }
-        
-        // %%%%%%%%%%%%%%%%%%%% Consultar la ip del Cache Zonal para un codigo pais
         printf("Codigo pais: %s\n", codigo_pais);
+
+        // %%%%%%%%%%%%%%%%%%%% Consultar la ip del Cache Zonal para un codigo pais
+        char ip[16];
         char *respuesta_zonal_ip = get_zonal_ip("/api/zonal_ip/%s", codigo_pais, node_api_host, node_api_port);
         if (respuesta_zonal_ip) {
             printf("respuesta zonal ip: %s\n", respuesta_zonal_ip);
+            char *p = strstr(respuesta_zonal_ip, "ip_cache");
+            if (p) {
+                p += 11;
+                int i = 0;
+                while (p[i] != '"') {
+                    ip[i] = p[i];
+                    i++;
+                }
+                ip[i] = '\0';
+            }
             free(respuesta_zonal_ip);
         }
+        printf("IP Zonal Cache: %s\n", ip);
         printf("Es estandar query.\n");
     } else {
         printf("No estandar query.\n");
