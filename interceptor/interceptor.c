@@ -17,6 +17,27 @@
 #define PORT 5000
 #define MAXLINE 1000
 
+// Leer las variables de entorno
+static const char *env_texto(const char *nombre, const char *respaldo) {
+    const char *v = getenv(nombre);
+    return (v && *v) ? v : respaldo;
+}
+
+static int env_entero(const char *nombre, int respaldo) {
+    const char *v = getenv(nombre);
+    if (!v || !*v) return respaldo;
+
+    int errno = 0;
+    char *sobrante;
+    long n = strtol(v, &sobrante, 10);
+
+    if (errno != 0 || *sobrante != '\0' || n < 0 || n > 65535) {
+        fprintf(stderr, "Aviso: %s=\"%s\" no es valido, se usa %d\n", nombre, v, respaldo);
+        return respaldo;
+    }
+    return (int)n;
+}
+
 void imprimir_hex(const unsigned char *buf, int n) {
     for (int i = 0; i < n; i++) {
         printf("%02x ", buf[i]);
@@ -113,19 +134,33 @@ char *http_get(const char *host, const char *puerto, const char *ruta) {
     return resultado_final;
 }
 
-char *get(char *ruta, struct sockaddr_in cliaddr) {
+char *get_ip_to_country(char *ruta, struct sockaddr_in cliaddr, const char *node_api_host, int node_api_port) {
     char ip[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &cliaddr.sin_addr, ip, sizeof(ip));
     char buffer_ruta[128];
     snprintf(buffer_ruta, sizeof(buffer_ruta), ruta, ip);
-    // En futuros avances: colocar el dominio al API REST y el puerto como variable de entorno
-    char *json = http_get("api-node.tu-dominio.com", "80", buffer_ruta);
+    char buffer_to_integer[20];
+    snprintf(buffer_to_integer, sizeof(buffer_to_integer), "%d", node_api_port);
+    char *json = http_get(node_api_host, buffer_to_integer, buffer_ruta);
+    return json;
+}
+
+char *get_zonal_ip(char *ruta, char *codigo_pais, const char *node_api_host, int node_api_port) {
+    char buffer_ruta[128];
+    snprintf(buffer_ruta, sizeof(buffer_ruta), ruta, codigo_pais);
+    char buffer_to_integer[20];
+    snprintf(buffer_to_integer, sizeof(buffer_to_integer), "%d", node_api_port);
+    char *json = http_get(node_api_host, buffer_to_integer, buffer_ruta);
     return json;
 }
 
 int main() {   
     char buffer[100];
-    char *message = "Hello Client";
+    // Leer variables de entorno
+    int puerto_dns_interceptor = env_entero("DNS_INTERCEPTOR_PORT", 5000);
+    const char *node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
+    int node_api_port = env_entero("NODE_API_PORT", 3000);
+
     int listenfd, len;
     struct sockaddr_in servaddr, cliaddr;
     bzero(&servaddr, sizeof(servaddr));
@@ -133,7 +168,7 @@ int main() {
     // Create a UDP Socket
     listenfd = socket(AF_INET, SOCK_DGRAM, 0);        
     servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-    servaddr.sin_port = htons(PORT);
+    servaddr.sin_port = htons(puerto_dns_interceptor);
     servaddr.sin_family = AF_INET; 
  
     // bind server address to socket descriptor
@@ -151,10 +186,18 @@ int main() {
     if (!qr && op_code == 0) {
         char *dominio = extraer_dominio(buffer);
         printf("%s\n", dominio);
-        // Consultar ip to country
-        char *respuesta = get("/api/ip_to_country/%s", cliaddr);
+        // %%%%%%%%%%%%%%%%%%%% Consultar ip to country
+        char *respuesta = get_ip_to_country("/api/ip_to_country/%s", cliaddr, node_api_host, node_api_port);
+        // Extraer el codigo pais
+        char codigo_pais[] = {respuesta[26], respuesta[27]};
         if (respuesta) {
-            printf("respuesta: %s\n", respuesta);
+            printf("respuesta codigo pais: %s\n", respuesta);
+            free(respuesta);
+        }
+        // %%%%%%%%%%%%%%%%%%%% Consultar la ip del Cache Zonal para un codigo pais
+        char *respuesta = get_zonal_ip("/api/zonal_ip/%s", codigo_pais, node_api_host, node_api_port);
+        if (respuesta) {
+            printf("respuesta zonal ip: %s\n", respuesta);
             free(respuesta);
         }
         printf("Es estandar query.\n");
