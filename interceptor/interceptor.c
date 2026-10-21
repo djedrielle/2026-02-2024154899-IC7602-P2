@@ -210,20 +210,11 @@ char *http_get(const char *host, const char *puerto, const char *ruta) {
     return resultado_final;
 }
 
-char *get_ip_to_country(char *ruta, struct sockaddr_in cliaddr, const char *node_api_host, int node_api_port) {
+char *consultar_api(char *ruta, struct sockaddr_in cliaddr, const char *node_api_host, int node_api_port) {
     char ip[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &cliaddr.sin_addr, ip, sizeof(ip));
     char buffer_ruta[128];
     snprintf(buffer_ruta, sizeof(buffer_ruta), ruta, ip);
-    char buffer_to_integer[20];
-    snprintf(buffer_to_integer, sizeof(buffer_to_integer), "%d", node_api_port);
-    char *json = http_get(node_api_host, buffer_to_integer, buffer_ruta);
-    return json;
-}
-
-char *get_zonal_ip(char *ruta, char *codigo_pais, const char *node_api_host, int node_api_port) {
-    char buffer_ruta[128];
-    snprintf(buffer_ruta, sizeof(buffer_ruta), ruta, codigo_pais);
     char buffer_to_integer[20];
     snprintf(buffer_to_integer, sizeof(buffer_to_integer), "%d", node_api_port);
     char *json = http_get(node_api_host, buffer_to_integer, buffer_ruta);
@@ -273,40 +264,44 @@ int main() {
             char *dominio = extraer_dominio(buffer);
             printf("%s\n", dominio);
             
-            // %%%%%%%%%%%%%%%%%%%% Consultar ip to country
-            char codigo_pais[3];
-            char *respuesta_ip_to_country = get_ip_to_country("/api/ip_to_country/%s", cliaddr, node_api_host, node_api_port);
-            if (respuesta_ip_to_country) {
-                printf("respuesta codigo pais: %s\n", respuesta_ip_to_country);
-                // Extraer el codigo pais
-                char *p = strstr(respuesta_ip_to_country, "\"pais\":\"");
-                if (p) {
-                    p += 8;
-                    codigo_pais[0] = p[0];
-                    codigo_pais[1] = p[1];
-                    codigo_pais[2] = '\0';
+            // %%%%%%%%%%%%%%%%%%%% Consultar pais + ip del Cache Zonal (una sola llamada)
+            char codigo_pais[3] = {0};
+            char ip[16] = {0};
+
+            char *respuesta_api = consultar_api("/api/resolver/%s", cliaddr, node_api_host, node_api_port);
+            if (respuesta_api == NULL) {
+                fprintf(stderr, "no se pudo consultar el API\n");
+                continue;
+            }
+            printf("respuesta API: %s\n", respuesta_api);
+
+            // Extraer el codigo pais
+            char *p = strstr(respuesta_api, "\"pais\":\"");
+            if (p) {
+                p += 8;
+                codigo_pais[0] = p[0];
+                codigo_pais[1] = p[1];
+                codigo_pais[2] = '\0';
+            }
+
+            // Extraer la ip del Zonal Cache
+            p = strstr(respuesta_api, "\"ip_cache\":\"");
+            if (p) {
+                p += 12;
+                size_t k = 0;
+                while (p[k] != '"' && p[k] != '\0' && k < sizeof(ip) - 1) {
+                    ip[k] = p[k];
+                    k++;
                 }
-                free(respuesta_ip_to_country);
+                ip[k] = '\0';
+            }
+            free(respuesta_api);
+
+            if (codigo_pais[0] == '\0' || ip[0] == '\0') {
+                fprintf(stderr, "respuesta del API incompleta\n");
+                continue;
             }
             printf("Codigo pais: %s\n", codigo_pais);
-
-            // %%%%%%%%%%%%%%%%%%%% Consultar la ip del Cache Zonal para un codigo pais
-            char ip[16];
-            char *respuesta_zonal_ip = get_zonal_ip("/api/zonal_ip/%s", codigo_pais, node_api_host, node_api_port);
-            if (respuesta_zonal_ip) {
-                printf("respuesta zonal ip: %s\n", respuesta_zonal_ip);
-                char *p = strstr(respuesta_zonal_ip, "ip_cache");
-                if (p) {
-                    p += 11;
-                    int i = 0;
-                    while (p[i] != '"') {
-                        ip[i] = p[i];
-                        i++;
-                    }
-                    ip[i] = '\0';
-                }
-                free(respuesta_zonal_ip);
-            }
             printf("IP Zonal Cache: %s\n", ip);
             // Contruir la respuesta para el DNS Client
             char respuesta[512];
