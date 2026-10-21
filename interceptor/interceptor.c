@@ -152,7 +152,7 @@ int main() {
         char *dominio = extraer_dominio(buffer);
         printf("%s\n", dominio);
         // Consultar ip to country
-        char *respuesta = get("/api/ip_country/%s", cliaddr);
+        char *respuesta = get("/api/ip_to_country/%s", cliaddr);
         if (respuesta) {
             printf("respuesta: %s\n", respuesta);
             free(respuesta);
