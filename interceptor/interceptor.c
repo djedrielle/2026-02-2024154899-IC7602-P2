@@ -177,28 +177,41 @@ int main() {
     //receive the datagram
     len = sizeof(cliaddr);
     int n = recvfrom(listenfd, buffer, sizeof(buffer), 0, (struct sockaddr*)&cliaddr,&len); //receive message from server
+    
     // Imprimir la informacion recibida
     printf("recibidos %d bytes:\n", n);
     imprimir_hex((unsigned char *)buffer, n);
+    
     // Obtener el valor de qr y opcode
     bool qr = ((buffer[2] >> 7) & 1) == 1;
     uint8_t op_code = (buffer[2] >> 3) & 15;
+    
     if (!qr && op_code == 0) {
         char *dominio = extraer_dominio(buffer);
         printf("%s\n", dominio);
+        
         // %%%%%%%%%%%%%%%%%%%% Consultar ip to country
-        char *respuesta = get_ip_to_country("/api/ip_to_country/%s", cliaddr, node_api_host, node_api_port);
+        char *respuesta_ip_to_country = get_ip_to_country("/api/ip_to_country/%s", cliaddr, node_api_host, node_api_port);
         // Extraer el codigo pais
-        char codigo_pais[] = {respuesta[26], respuesta[27]};
-        if (respuesta) {
-            printf("respuesta codigo pais: %s\n", respuesta);
-            free(respuesta);
+        char codigo_pais[3];
+        if (respuesta_ip_to_country) {
+            printf("respuesta codigo pais: %s\n", respuesta_ip_to_country);
+            char *p = strstr(respuesta_ip_to_country, "\"pais\":\"");
+            if (p) {
+                p += 8;
+                codigo_pais[0] = p[0];
+                codigo_pais[1] = p[1];
+                codigo_pais[2] = '\0';
+            }
+            free(respuesta_ip_to_country);
         }
+        
         // %%%%%%%%%%%%%%%%%%%% Consultar la ip del Cache Zonal para un codigo pais
-        char *respuesta = get_zonal_ip("/api/zonal_ip/%s", codigo_pais, node_api_host, node_api_port);
-        if (respuesta) {
-            printf("respuesta zonal ip: %s\n", respuesta);
-            free(respuesta);
+        printf("Codigo pais: %s\n", codigo_pais);
+        char *respuesta_zonal_ip = get_zonal_ip("/api/zonal_ip/%s", codigo_pais, node_api_host, node_api_port);
+        if (respuesta_zonal_ip) {
+            printf("respuesta zonal ip: %s\n", respuesta_zonal_ip);
+            free(respuesta_zonal_ip);
         }
         printf("Es estandar query.\n");
     } else {
