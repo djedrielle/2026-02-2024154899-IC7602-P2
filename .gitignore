@@ -3,3 +3,6 @@
 !*.c
 Makefile
 */plantilla
+*/interceptor
+*/node_modules
+*/*.log
