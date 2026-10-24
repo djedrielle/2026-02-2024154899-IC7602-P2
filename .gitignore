@@ -4,5 +4,6 @@
 Makefile
 */plantilla
 */interceptor
+*/zonal_cache
 */node_modules
 */*.log
