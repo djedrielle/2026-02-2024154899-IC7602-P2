@@ -8,36 +8,13 @@
 #include <stdio.h>
 #include <strings.h>
 
-#include <netdb.h>
-#include <unistd.h>
 #include <sys/types.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include<netinet/in.h>
-#define PORT 5000
-#define MAXLINE 1000
 
-// ---------- Leer las variables de entorno
-static const char *env_texto(const char *nombre, const char *respaldo) {
-    const char *v = getenv(nombre);
-    return (v && *v) ? v : respaldo;
-}
-
-static int env_entero(const char *nombre, int respaldo) {
-    const char *v = getenv(nombre);
-    if (!v || !*v) return respaldo;
-
-    int errno = 0;
-    char *sobrante;
-    long n = strtol(v, &sobrante, 10);
-
-    if (errno != 0 || *sobrante != '\0' || n < 0 || n > 65535) {
-        fprintf(stderr, "Aviso: %s=\"%s\" no es valido, se usa %d\n", nombre, v, respaldo);
-        return respaldo;
-    }
-    return (int)n;
-}
-// ----------------------------------------
+#include "../comun/http_cliente.h"
+#include "../comun/variables_entorno.h"
 
 size_t construir_respuesta(char *buffer_solicitud, char *ip, char *buffer_respuesta, size_t max) {
     size_t longitud_label;
@@ -147,85 +124,24 @@ char *extraer_dominio(char *buffer) {
     return dominio;
 }
 
-/* Hace un GET a http://host:puerto{ruta} y devuelve SOLO el cuerpo
- * de la respuesta, reservado con malloc (el que llama libera con free()).
- * Devuelve NULL si algo falla. */
-char *http_get(const char *host, const char *puerto, const char *ruta) {
-    struct addrinfo hints = {0}, *resultado;
-    hints.ai_family   = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-
-    if (getaddrinfo(host, puerto, &hints, &resultado) != 0) {
-        fprintf(stderr, "no se pudo resolver %s\n", host);
-        return NULL;
-    }
-
-    int sockfd = socket(resultado->ai_family, resultado->ai_socktype, 0);
-    if (sockfd < 0 || connect(sockfd, resultado->ai_addr, resultado->ai_addrlen) < 0) {
-        perror("connect");
-        freeaddrinfo(resultado);
-        return NULL;
-    }
-    freeaddrinfo(resultado);
-
-    char peticion[512];
-    int largo = snprintf(peticion, sizeof(peticion),
-        "GET %s HTTP/1.1\r\n"
-        "Host: %s\r\n"
-        "Connection: close\r\n"
-        "\r\n",
-        ruta, host);
-
-    if (send(sockfd, peticion, (size_t)largo, 0) < 0) {
-        perror("send");
-        close(sockfd);
-        return NULL;
-    }
-
-    size_t cap = 4096, total = 0;
-    char  *crudo = malloc(cap);
-    if (!crudo) { close(sockfd); return NULL; }
-
-    ssize_t n;
-    while ((n = recv(sockfd, crudo + total, cap - total, 0)) > 0) {
-        total += (size_t)n;
-        if (total == cap) {
-            cap *= 2;
-            char *tmp = realloc(crudo, cap);
-            if (!tmp) { free(crudo); close(sockfd); return NULL; }
-            crudo = tmp;
-        }
-    }
-    close(sockfd);
-
-    if (n < 0) { free(crudo); perror("recv"); return NULL; }
-    crudo[total] = '\0';
-
-    char *cuerpo = strstr(crudo, "\r\n\r\n");
-    if (!cuerpo) { free(crudo); return NULL; }
-    cuerpo += 4;
-
-    char *resultado_final = strdup(cuerpo);
-    free(crudo);
-    return resultado_final;
-}
-
-char *consultar_api(char *ruta, struct sockaddr_in cliaddr, const char *node_api_host, int node_api_port) {
+char *consultar_api(char *ruta, struct sockaddr_in cliaddr, const char *env_node_api_host, int env_node_api_port) {
     char ip[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &cliaddr.sin_addr, ip, sizeof(ip));
     char buffer_ruta[128];
     snprintf(buffer_ruta, sizeof(buffer_ruta), ruta, ip);
-    char buffer_to_integer[20];
-    snprintf(buffer_to_integer, sizeof(buffer_to_integer), "%d", node_api_port);
-    char *json = http_get(node_api_host, buffer_to_integer, buffer_ruta);
+    char buffer_from_int_to_char[20];
+    snprintf(buffer_from_int_to_char, sizeof(buffer_from_int_to_char), "%d", env_node_api_port);
+    size_t largo_salida;
+    char *json = http_get(env_node_api_host, buffer_from_int_to_char, buffer_ruta, &largo_salida, 0);
+    // Usar largo_salida en caso de ser necesario. De momento no se utiliza.
     return json;
 }
 
 int main() {
     // Leer variables de entorno
-    int puerto_dns_interceptor = env_entero("DNS_INTERCEPTOR_PORT", 5000);
-    const char *node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
-    int node_api_port = env_entero("NODE_API_PORT", 3000);
+    int env_puerto_dns_interceptor = env_entero("DNS_INTERCEPTOR_PORT", 5000);
+    const char *env_node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
+    int env_node_api_port = env_entero("NODE_API_PORT", 3000);
 
     int listenfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (listenfd < 0) { perror("socket"); return 1; }
@@ -233,13 +149,13 @@ int main() {
     struct sockaddr_in servaddr = {0};
     servaddr.sin_family      = AF_INET;
     servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-    servaddr.sin_port        = htons(puerto_dns_interceptor);
+    servaddr.sin_port        = htons(env_puerto_dns_interceptor);
 
     if (bind(listenfd, (struct sockaddr*)&servaddr, sizeof servaddr) < 0) {
         perror("bind");
         return 1;
     }
-    printf("Interceptor escuchando en el puerto %d\n", puerto_dns_interceptor);
+    printf("Interceptor escuchando en el puerto %d\n", env_puerto_dns_interceptor);
 
     /* --- ciclo de atención --- */
     char buffer[512];
@@ -268,7 +184,7 @@ int main() {
             char codigo_pais[3] = {0};
             char ip[16] = {0};
 
-            char *respuesta_api = consultar_api("/api/resolver/%s", cliaddr, node_api_host, node_api_port);
+            char *respuesta_api = consultar_api("/api/resolver/%s", cliaddr, env_node_api_host, env_node_api_port);
             if (respuesta_api == NULL) {
                 fprintf(stderr, "no se pudo consultar el API\n");
                 continue;

@@ -7,3 +7,5 @@ Makefile
 */zonal_cache
 */node_modules
 */*.log
+/bin
+/build
