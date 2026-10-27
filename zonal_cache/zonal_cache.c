@@ -39,7 +39,11 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
     puntero_fin_buscado = strchr(puntero_inicio_host, '\r');
     cant_caracteres = puntero_fin_buscado - puntero_inicio_host;
     char *host = malloc(cant_caracteres + 1);
-    memcpy(host, puntero_inicio_host, cant_caracteres);
+    int i = 0;
+    while (i <= cant_caracteres && puntero_inicio_host[i] != ':') {
+        host[i] = puntero_inicio_host[i];
+        i++;
+    }
     host[cant_caracteres] = '\0';
     printf("Host: %s\n", host);
 
@@ -51,7 +55,7 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
     //      Consultar http://127.0.0.1:8081/
     char buffer_from_int_to_char[20];
     snprintf(buffer_from_int_to_char, sizeof(buffer_from_int_to_char), "%d", env_puerto_server_origen);
-    char *respuesta_origen = http_get("127.0.0.1", buffer_from_int_to_char, ruta, largo_salida, 1);
+    char *respuesta_origen = http_get(host, buffer_from_int_to_char, ruta, largo_salida, 1);
     if (respuesta_origen == NULL) {
         printf("No se puede recuperar información del origen.");
         free(metodo);
