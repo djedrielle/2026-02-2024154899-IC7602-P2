@@ -14,82 +14,144 @@
 #include "../comun/http_cliente.h"
 #include "../comun/variables_entorno.h"
 
-char *leer_dat(char *dir_punto_dat, size_t *cantidad_leidos) {
+typedef struct {
+    char clave[256];
+    long tamanno;
+    time_t insercion;
+    time_t ultimo_acceso;
+    long cantidad_accesos;
+    time_t expiracion;
+} Meta;
+
+int leer_meta(char *dir_punto_meta, Meta *salida) {
     FILE *f = fopen(dir_punto_meta, "r");
     if (f == NULL) {
-        fclose(f);
         return -1;
     }
+
+    // Leer los datos del archivo y construir un objeto Meta con estos datos
+    char clave[256];
+    long tamanno;
+    long insercion;
+    long ultimo_acceso;
+    long cantidad_accesos;
+    long expiracion;
+
+    if (fscanf(f, "%*s %255s %*s %ld %*s %ld %*s %ld %*s %ld %*s %ld", clave, &tamanno, &insercion, &ultimo_acceso, &cantidad_accesos, &expiracion) != 6) {
+        fclose(f);
+        fprintf(stderr, "Formato invalido en el .meta %s\n", dir_punto_meta);
+        return -1;
+    }
+
+    snprintf(salida->clave, sizeof(salida->clave), "%s", clave);
+    salida->tamanno = tamanno;
+    salida->insercion = insercion;
+    salida->ultimo_acceso = ultimo_acceso;
+    salida->cantidad_accesos = cantidad_accesos;
+    salida->expiracion = expiracion;
+
+    fclose(f);
+    return 0;
+}
+
+char *leer_dat(char *dir_punto_dat, size_t *cantidad_leidos) {
+    FILE *f = fopen(dir_punto_dat, "r");
+    if (f == NULL) return NULL;
     // Obtener el tamanno del archivo
     struct stat st;
-    stat(dir_punto_dat, &st);
+    if (stat(dir_punto_dat, &st)) {
+        fclose(f);
+        perror("Error intentando obtener el tamanno del archivo .dat");
+        return NULL;
+    }
     // Leer el archivo completo
-    static char archivo[st.st_size];
-    cantidad_leidos = fread(archivo, sizeof(char), sizeof(archivo), f);
+    char *archivo = malloc(st.st_size);
+    if (archivo == NULL) {
+        fclose(f);
+        return NULL;
+    }
+    *cantidad_leidos = fread(archivo, sizeof(char), st.st_size, f);
+    fclose(f);
     return archivo;
 }
 
+int escribir_dat(char *dir_punto_dat, char *respuesta_origen, size_t *largo_salida) {
+    FILE *f = fopen(dir_punto_dat, "wb");
+    if (f == NULL) return -1;
+    int escritos = fwrite(respuesta_origen, sizeof(char), *largo_salida, f);
+    return escritos;
+}
+
 int actualizar_meta(char *dir_punto_meta) {
-    FILE *f = fopen(dir_punto_meta, "r");
-    if (f == NULL) {
-        fclose(f);
+    Meta m;
+    if (leer_meta(dir_punto_meta, &m) == -1) {
         return -1;
     }
-    // Leer el archivo completo
-    char archivo[1024];
-    fread(archivo, sizeof(char), sizeof(archivo), f);
-    // Leer la cantidad de accesos actual
-    char *puntero_cantidad_accesos = strstr(archivo, "cantidad_accesos: ");
-    puntero_cantidad_accesos += 18;
-    char* endptr;
-    long cantidad_accesos = strtol(puntero_cantidad_accesos, &endptr, 10);
-    // Incrementar la cantidad de accesos y obtener el momento actual
-    cantidad_accesos++;
-    time_t momento_actual = time(NULL);
-    // Actualizar los datos del archivo
-    char *puntero_ultimo_acceso = strstr(archivo, "ultimo_acceso: ")
-    puntero_ultimo_acceso += 15; // Aca hay que escribir el nuevo valor de ultimo_acceso
-    char archivo_actualizado[1024];
-    for (int i = 0; archivo[i] != '\0'; i++) {
-        if (archivo + i == puntero_ultimo_acceso) {
-            i += snprintf(archivo_actualizado + i, sizeof(archivo_actualizado), "%d", momento_actual);
-        } else if (archivo + i == puntero_cantidad_accesos) {
-            i += snprintf(archivo_actualizado + i, sizeof(archivo_actualizado), "%d", cantidad_accesos);
-        }
-        archivo_actualizado[i] = archivo[i];
-    }
-    // Ya tenemos los datos del archivo actualizado en el buffer archivo_actualizado
-    fclose(f);
+
+    // Actualizar los datos
+    m.ultimo_acceso = time(NULL);
+    m.cantidad_accesos += 1;
+
     // Escribir los datos
     FILE *fw = fopen(dir_punto_meta, "w");
     if (fw == NULL) {
-        fclose(fw);
         return -1;
     }
-    fwrite(archivo_actualizado, sizeof(char), strlen(archivo_actualizado), fw);
+    fprintf(fw, "clave_original: %s\ntamanno_bytes: %ld\nmomento_insercion: %ld\nultimo_acceso: %ld\ncantidad_accesos: %ld\nmomento_expiracion: %ld", 
+        m.clave,
+        m.tamanno,
+        m.insercion,
+        m.ultimo_acceso,
+        m.cantidad_accesos,
+        m.expiracion
+    );
+    fclose(fw);
+    return 0;
+}
+
+int escribir_meta(char *dir_punto_meta, char *clave, long tam_bytes, long TTL) {
+    char clave[256];
+    long tamanno;
+    long insercion;
+    long ultimo_acceso;
+    long cantidad_accesos;
+    long expiracion;
+
+    Meta m;
+    snprintf(m.clave, sizeof(m.clave), "%s", clave);
+    m.tamanno = tam_bytes;
+    m.insercion = time(NULL);
+    m.ultimo_acceso = time(NULL);
+    m.cantidad_accesos = 1;
+    m.expiracion = time(NULL) + TTL;
+
+    FILE *fw = fopen(dir_punto_meta, "w");
+    if (fw == NULL) {
+        return -1;
+    }
+    fprintf(fw, "clave_original: %s\ntamanno_bytes: %ld\nmomento_insercion: %ld\nultimo_acceso: %ld\ncantidad_accesos: %ld\nmomento_expiracion: %ld", 
+        m.clave,
+        m.tamanno,
+        m.insercion,
+        m.ultimo_acceso,
+        m.cantidad_accesos,
+        m.expiracion
+    );
     fclose(fw);
     return 0;
 }
 
 int expirado(char *dir_punto_meta) {
-    FILE *f = fopen(dir_punto_meta, "r");
-    if (f == NULL) {
+    Meta m;
+    if (leer_meta(dir_punto_meta, &m) == -1) {
         return -1;
     }
-    // Leer el momento de expiracion
-    char archivo[1024];
-    fread(archivo, sizeof(char), sizeof(archivo), f);
-    char *puntero_momento_expiracion = strstr(archivo, "momento_expiracion: ");
-    puntero_momento_expiracion += 20;
-    char* endptr;
-    time_t momento_expiracion = strtol(puntero_momento_expiracion, &endptr, 10);
+
     // Comparar con el momento actual
     time_t momento_actual = time(NULL);
-    if (momento_actual < momento_expiracion) {
-        fclose(f);
+    if (momento_actual < m.expiracion) {
         return 0;
     } else {
-        fclose(f);
         return 1;
     }
 }
@@ -131,8 +193,8 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
     puntero_fin_buscado = strchr(puntero_inicio_host, '\r');
     cant_caracteres = puntero_fin_buscado - puntero_inicio_host;
     char *host = malloc(cant_caracteres + 1);
-    int i = 0;
-    while (i <= cant_caracteres && puntero_inicio_host[i] != ':') {
+    size_t i = 0;
+    while (i < cant_caracteres && puntero_inicio_host[i] != ':') {
         host[i] = puntero_inicio_host[i];
         i++;
     }
@@ -143,76 +205,89 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
     char clave[strlen(host) + strlen(ruta) + 1];
     snprintf(clave, sizeof(clave), "%s%s", host, ruta);
 
-    char hash_clave[16];
+    char hash_clave[16 + 1];
     snprintf(hash_clave, sizeof(hash_clave), "%016lx", fnv1a(clave));
 
     // Verificar si se tiene informacion en cache del host correspondiente
     struct stat st = {0};
     
-    char dir_directorio[6 + cant_caracteres]; // "cache/" -> 6 caracteres
+    char dir_directorio[6 + strlen(host) + 1]; // "cache/" -> 6 caracteres
     snprintf(dir_directorio, sizeof(dir_directorio), "%s%s", "cache/", host);
 
-    if (stat(dir_directorio, &st)) {
-        // Formar la direccion de los .meta y .dat
-        char dir_punto_meta[sizeof(dir_directorio) + 1 + sizeof(hash_clave) + 5]; // +1 por el '/' entre el directorio y el hash. +5 por el ".meta"
-        char dir_punto_dat[sizeof(dir_directorio) + 1 + sizeof(hash_clave) + 4]; // +4 por el ".dat"
-        snprintf(dir_punto_meta + sizeof(dir_punto_meta) - 4, sizeof(dir_punto_meta), "%s", ".meta");
-        snprintf(dir_punto_dat + sizeof(dir_punto_dat) - 3, sizeof(dir_punto_dat), "%s", ".dat");
-        
-        // Verificar si la carpeta del dominio ya esta creada
-        if (!stat(dir_punto_meta, &st)) {
-            // Verificar si ya expiro
-            int esta_expirado = expirado(dir_punto_meta);
-            if (esta_expirado == 0) {
-                // Actualizar metadatos
-                if (actualizar_meta(dir_punto_meta) == -1) {
-                    perror("Error al intentar actualizar los valores del .meta");
-                    return NULL;
-                }
-                // Leer .dat
-                char *respuesta = leer_dat(dir_punto_dat, largo_salida);
-                // Liberar memoria y retornar la respuesta al usuario
-                free(metodo);
-                free(ruta);
-                free(host);
-                return respuesta_origen;
-            } else if (esta_expirado == -1) {
-                perror("Error al intentar leer el .meta");
-                return NULL;
-            } // Si esta_expirado == 1, entonces ya expiro
-        } else {
-            perror("Error al intentar ubicar el .meta");
-            return NULL;
-        }
-    } else {
-        // Si no esta creada se crea, mas abajo se trae la informacion del dominio
-        if (mkdir(ruta, 0777) != 0) {
-            perror("Error al crear el directorio");
-            return NULL;
-        }
-    }
-    
-    // Consultar informacion al servidor origen
-    char buffer_from_int_to_char[20];
-    snprintf(buffer_from_int_to_char, sizeof(buffer_from_int_to_char), "%d", env_puerto_server_origen);
-    char *respuesta_origen = http_get(host, buffer_from_int_to_char, ruta, largo_salida, 1);
-    if (respuesta_origen == NULL) {
-        printf("No se puede recuperar información del origen.");
+    // Formar la direccion de los .meta y .dat
+    char dir_punto_meta[sizeof(dir_directorio) + 1 + sizeof(hash_clave) + 5]; // +1 por el '/' entre el directorio y el hash. +5 por el ".meta"
+    char dir_punto_dat[sizeof(dir_directorio) + 1 + sizeof(hash_clave) + 4]; // +4 por el ".dat"
+    snprintf(dir_punto_meta, sizeof(dir_punto_meta), "%s/%s.meta", dir_directorio, hash_clave);
+    snprintf(dir_punto_dat, sizeof(dir_punto_dat), "%s/%s.dat", dir_directorio, hash_clave);
+
+    // Verificar si el directorio del dominio, si la carpeta .meta existe y si la informacion no ha expirado
+    int esta_expirado;
+    if (!stat(dir_directorio, &st) && !stat(dir_punto_meta, &st) && (esta_expirado = expirado(dir_punto_meta)) == 0) {
+        // Si es un hit no se necesitara mas estos datos
         free(metodo);
         free(ruta);
         free(host);
-        return NULL;
-    }
 
-    // Guardar .dat y .meta
+        if (esta_expirado == -1) {
+            fprintf(stderr, "Error al intentar leer el .meta %s\n", dir_punto_meta);
+            return NULL;
+        }
 
-    printf("Salida Apache Server: %.*s", (int)*largo_salida, respuesta_origen);
+        // Actualizar metadatos
+        if (actualizar_meta(dir_punto_meta) == -1) {
+            fprintf(stderr, "Error al intentar actualizar los valores del .meta %s\n", dir_punto_meta);
+            return NULL;
+        }
+
+        // Leer .dat
+        char *respuesta = leer_dat(dir_punto_dat, largo_salida);
+
+        if (respuesta == NULL) {
+            fprintf(stderr, "Error al intentar recuperar la respuesta del cache %s\n", dir_punto_dat);
+            return NULL;
+        }
+        // Retornar la respuesta al usuario
+        return respuesta;
     
-    free(metodo);
-    free(ruta);
-    free(host);
+    } else {
+        // Si no esta creada se crea, mas abajo se trae la informacion del dominio
+        if (!stat(dir_directorio, &st)) {
+            if (mkdir(dir_directorio, 0777) != 0) {
+                perror("Error al crear el directorio");
+                free(metodo);
+                free(ruta);
+                free(host);
+                return NULL;
+            }
+        }
+        
+        // Consultar informacion al servidor origen
+        char buffer_from_int_to_char[20];
+        snprintf(buffer_from_int_to_char, sizeof(buffer_from_int_to_char), "%d", env_puerto_server_origen);
+        char *respuesta_origen = http_get(host, buffer_from_int_to_char, ruta, largo_salida, 1); 
+        free(metodo);
+        free(ruta);
+        free(host);
+        if (respuesta_origen == NULL) {
+            printf("No se puede recuperar información del origen");
+            return NULL;
+        }
+        // Guardar .dat y .meta
+        long tam_bytes;
+        if (tam_bytes = escribir_dat(dir_punto_dat, respuesta_origen, largo_salida)) == -1 {
+            printf("Error al intentar escribir el .dat");
+            return NULL;
+        }
 
-    return respuesta_origen;
+        if (escribir_meta(dir_punto_meta, clave, tam_bytes)) == -1 {
+            printf("Error al intentar escribir el .meta");
+            return NULL;
+        }
+
+        printf("Salida Apache Server: %.*s", (int)*largo_salida, respuesta_origen);
+        
+        return respuesta_origen;
+    }
 }
 
 
@@ -267,7 +342,7 @@ int main(void) {
             printf("Entrada: %s", entrada);
             size_t largo_salida = 0;
             char *respuesta = procesar_entrada(entrada, env_puerto_server_origen, &largo_salida);
-            if (respuesta == NULL) continue;
+            if (respuesta == NULL) break;
             send(client_socket, respuesta, largo_salida, MSG_NOSIGNAL);
             free(respuesta);
         }
