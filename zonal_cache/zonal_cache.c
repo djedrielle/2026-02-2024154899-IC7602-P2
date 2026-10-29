@@ -7,9 +7,42 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <errno.h>
+#include <sys/stat.h>
+#include <stdint.h>
+#include <time.h>
 
 #include "../comun/http_cliente.h"
 #include "../comun/variables_entorno.h"
+
+
+
+int no_ha_expirado(char *dir_punto_meta) {
+    FILE *archivo = fopen(dir_punto_meta, "r");
+    if (archivo == NULL) {
+        return -1;
+    }
+    // Leer el momento de expiracion
+    char *puntero_momento_expiracion = strstr(archivo, "momento_expiracion: ");
+    puntero_momento_expiracion += 20;
+    char* endptr;
+    int momento_expiracion = strtol(puntero_momento_expiracion, &endptr, 10);
+    // Comparar con el momento actual
+    time_t momento_actual = time(NULL);
+    if (momento_actual < momento_expiracion) {
+        return 0;
+    } else {
+        return 1;
+    }
+}
+
+static uint64_t fnv1a(const char *s) {
+    uint64_t h = 1469598103934665603ULL;
+    while (*s) {
+        h ^= (unsigned char)*s++;
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
 
 char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_t *largo_salida) {
     // Extraer el metodo
@@ -47,12 +80,49 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
     host[cant_caracteres] = '\0';
     printf("Host: %s\n", host);
 
+    // Hashear host + ruta
+    char clave[strlen(host) + strlen(ruta) + 1];
+    snprintf(clave, sizeof(clave), "%s%s", host, ruta);
+
+    char hash_clave[16];
+    snprintf(hash_clave, sizeof(hash_clave), "%016lx", fnv1a(clave));
+
     // Verificar si se tiene informacion en cache del host correspondiente
-    //      De momento esto lo dejamos pendiente, en futuras iteraciones agregamos el cache.
-    //      Por ahora solo hacemos el puente hacia el servidor Apache
+    struct stat st = {0};
     
-    // Si no, entonces consultar la informacion al servidor origen
-    //      Consultar http://127.0.0.1:8081/
+    char dir_directorio[6 + cant_caracteres]; // "cache/" -> 6 caracteres
+    snprintf(dir_directorio, sizeof(dir_directorio), "%s%s", "cache/", host);
+
+    if (stat(dir_directorio, &st)) {
+        // Buscar <hash>.meta y revisar si ya expiró
+        char dir_punto_meta[sizeof(dir_directorio) + 1 + sizeof(hash_clave) + 5]; // +1 por el '/' entre el directorio y el hash. +6 por el ".meta"
+        snprintf(dir_punto_meta + sizeof(dir_punto_meta) - 4, sizeof(dir_punto_meta), "%s", ".meta");
+        if (!stat(dir_punto_meta, &st)) {
+            // Verificar si ya expiro
+            int no_expirado = no_ha_expirado(dir_punto_meta);
+            if (no_expirado == 0) {
+                // Actualizar metadatos
+
+                // Leer .dat
+                // Retornar el contenido de .dat
+            } else if (no_expirado == -1) {
+                perror("Error al intentar leer el .meta");
+                return NULL;
+            } // Si no_expirado == 1, entonces ya expiro
+        } else {
+            perror("Error al intentar ubicar el .meta");
+            return NULL;
+        }
+        // Si no expiró entonces hay que actualizar los metadatos,
+        // consultar los metadatos y enviar la información al cliente
+    } else {
+        if (mkdir(ruta, 0777) != 0) {
+            perror("Error al crear el directorio");
+            return NULL;
+        }
+    }
+    
+    // Consultar informacion al servidor origen
     char buffer_from_int_to_char[20];
     snprintf(buffer_from_int_to_char, sizeof(buffer_from_int_to_char), "%d", env_puerto_server_origen);
     char *respuesta_origen = http_get(host, buffer_from_int_to_char, ruta, largo_salida, 1);
@@ -63,6 +133,8 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
         free(host);
         return NULL;
     }
+
+    // Guardar .dat y .meta
 
     printf("Salida Apache Server: %.*s", (int)*largo_salida, respuesta_origen);
     
