@@ -14,23 +14,68 @@
 #include "../comun/http_cliente.h"
 #include "../comun/variables_entorno.h"
 
+int actualizar_meta (char *dir_punto_meta) {
+    FILE *f = fopen(dir_punto_meta, "r");
+    if (f == NULL) {
+        fclose(f);
+        return -1;
+    }
+    // Leer el archivo completo
+    char archivo[1024];
+    fgets(archivo, sizeof(archivo), f);
+    // Leer la cantidad de accesos actual
+    char *puntero_cantidad_accesos = strstr(archivo, "cantidad_accesos: ");
+    puntero_cantidad_accesos += 18;
+    char* endptr;
+    long cantidad_accesos = strtol(puntero_cantidad_accesos, &endptr, 10);
+    // Incrementar la cantidad de accesos y obtener el momento actual
+    cantidad_accesos++;
+    time_t momento_actual = time(NULL);
+    // Actualizar los datos del archivo
+    char *puntero_ultimo_acceso = strstr(archivo, "ultimo_acceso: ")
+    puntero_ultimo_acceso += 15; // Aca hay que escribir el nuevo valor de ultimo_acceso
+    char archivo_actualizado[1024];
+    for (int i = 0; archivo[i] != '\0'; i++) {
+        if (archivo + i == puntero_ultimo_acceso) {
+            i += snprintf(archivo_actualizado + i, sizeof(archivo_actualizado), "%d", momento_actual);
+        } else if (archivo + i == puntero_cantidad_accesos) {
+            i += snprintf(archivo_actualizado + i, sizeof(archivo_actualizado), "%d", cantidad_accesos);
+        }
+        archivo_actualizado[i] = archivo[i];
+    }
+    // Ya tenemos los datos del archivo actualizado en el buffer archivo_actualizado
+    fclose(f);
+    // Escribir los datos
+    FILE *fw = fopen(dir_punto_meta, "w");
+    if (fw == NULL) {
+        fclose(fw);
+        return -1;
+    }
+    fwrite(archivo_actualizado, sizeof(char), strlen(archivo_actualizado), fw);
+    fclose(fw);
+    return 0;
+}
 
-
-int no_ha_expirado(char *dir_punto_meta) {
-    FILE *archivo = fopen(dir_punto_meta, "r");
-    if (archivo == NULL) {
+int expirado(char *dir_punto_meta) {
+    FILE *f = fopen(dir_punto_meta, "r");
+    if (f == NULL) {
+        fclose(f);
         return -1;
     }
     // Leer el momento de expiracion
+    char archivo[1024];
+    fgets(archivo, sizeof(archivo), f);
     char *puntero_momento_expiracion = strstr(archivo, "momento_expiracion: ");
     puntero_momento_expiracion += 20;
     char* endptr;
-    int momento_expiracion = strtol(puntero_momento_expiracion, &endptr, 10);
+    time_t momento_expiracion = strtol(puntero_momento_expiracion, &endptr, 10);
     // Comparar con el momento actual
     time_t momento_actual = time(NULL);
     if (momento_actual < momento_expiracion) {
+        fclose(f);
         return 0;
     } else {
+        fclose(f);
         return 1;
     }
 }
@@ -77,7 +122,7 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
         host[i] = puntero_inicio_host[i];
         i++;
     }
-    host[cant_caracteres] = '\0';
+    host[i] = '\0';
     printf("Host: %s\n", host);
 
     // Hashear host + ruta
@@ -99,16 +144,19 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
         snprintf(dir_punto_meta + sizeof(dir_punto_meta) - 4, sizeof(dir_punto_meta), "%s", ".meta");
         if (!stat(dir_punto_meta, &st)) {
             // Verificar si ya expiro
-            int no_expirado = no_ha_expirado(dir_punto_meta);
-            if (no_expirado == 0) {
+            int esta_expirado = expirado(dir_punto_meta);
+            if (esta_expirado == 0) {
                 // Actualizar metadatos
-
+                if (actualizar_meta(dir_punto_meta) == -1) {
+                    perror("Error al intentar actualizar los valores del .meta");
+                    return NULL;
+                }
                 // Leer .dat
                 // Retornar el contenido de .dat
-            } else if (no_expirado == -1) {
+            } else if (esta_expirado == -1) {
                 perror("Error al intentar leer el .meta");
                 return NULL;
-            } // Si no_expirado == 1, entonces ya expiro
+            } // Si esta_expirado == 1, entonces ya expiro
         } else {
             perror("Error al intentar ubicar el .meta");
             return NULL;
