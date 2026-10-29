@@ -14,7 +14,22 @@
 #include "../comun/http_cliente.h"
 #include "../comun/variables_entorno.h"
 
-int actualizar_meta (char *dir_punto_meta) {
+char *leer_dat(char *dir_punto_dat, size_t *cantidad_leidos) {
+    FILE *f = fopen(dir_punto_meta, "r");
+    if (f == NULL) {
+        fclose(f);
+        return -1;
+    }
+    // Obtener el tamanno del archivo
+    struct stat st;
+    stat(dir_punto_dat, &st);
+    // Leer el archivo completo
+    static char archivo[st.st_size];
+    cantidad_leidos = fread(archivo, sizeof(char), sizeof(archivo), f);
+    return archivo;
+}
+
+int actualizar_meta(char *dir_punto_meta) {
     FILE *f = fopen(dir_punto_meta, "r");
     if (f == NULL) {
         fclose(f);
@@ -22,7 +37,7 @@ int actualizar_meta (char *dir_punto_meta) {
     }
     // Leer el archivo completo
     char archivo[1024];
-    fgets(archivo, sizeof(archivo), f);
+    fread(archivo, sizeof(char), sizeof(archivo), f);
     // Leer la cantidad de accesos actual
     char *puntero_cantidad_accesos = strstr(archivo, "cantidad_accesos: ");
     puntero_cantidad_accesos += 18;
@@ -59,12 +74,11 @@ int actualizar_meta (char *dir_punto_meta) {
 int expirado(char *dir_punto_meta) {
     FILE *f = fopen(dir_punto_meta, "r");
     if (f == NULL) {
-        fclose(f);
         return -1;
     }
     // Leer el momento de expiracion
     char archivo[1024];
-    fgets(archivo, sizeof(archivo), f);
+    fread(archivo, sizeof(char), sizeof(archivo), f);
     char *puntero_momento_expiracion = strstr(archivo, "momento_expiracion: ");
     puntero_momento_expiracion += 20;
     char* endptr;
@@ -139,9 +153,13 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
     snprintf(dir_directorio, sizeof(dir_directorio), "%s%s", "cache/", host);
 
     if (stat(dir_directorio, &st)) {
-        // Buscar <hash>.meta y revisar si ya expiró
-        char dir_punto_meta[sizeof(dir_directorio) + 1 + sizeof(hash_clave) + 5]; // +1 por el '/' entre el directorio y el hash. +6 por el ".meta"
+        // Formar la direccion de los .meta y .dat
+        char dir_punto_meta[sizeof(dir_directorio) + 1 + sizeof(hash_clave) + 5]; // +1 por el '/' entre el directorio y el hash. +5 por el ".meta"
+        char dir_punto_dat[sizeof(dir_directorio) + 1 + sizeof(hash_clave) + 4]; // +4 por el ".dat"
         snprintf(dir_punto_meta + sizeof(dir_punto_meta) - 4, sizeof(dir_punto_meta), "%s", ".meta");
+        snprintf(dir_punto_dat + sizeof(dir_punto_dat) - 3, sizeof(dir_punto_dat), "%s", ".dat");
+        
+        // Verificar si la carpeta del dominio ya esta creada
         if (!stat(dir_punto_meta, &st)) {
             // Verificar si ya expiro
             int esta_expirado = expirado(dir_punto_meta);
@@ -152,7 +170,12 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
                     return NULL;
                 }
                 // Leer .dat
-                // Retornar el contenido de .dat
+                char *respuesta = leer_dat(dir_punto_dat, largo_salida);
+                // Liberar memoria y retornar la respuesta al usuario
+                free(metodo);
+                free(ruta);
+                free(host);
+                return respuesta_origen;
             } else if (esta_expirado == -1) {
                 perror("Error al intentar leer el .meta");
                 return NULL;
@@ -161,9 +184,8 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
             perror("Error al intentar ubicar el .meta");
             return NULL;
         }
-        // Si no expiró entonces hay que actualizar los metadatos,
-        // consultar los metadatos y enviar la información al cliente
     } else {
+        // Si no esta creada se crea, mas abajo se trae la informacion del dominio
         if (mkdir(ruta, 0777) != 0) {
             perror("Error al crear el directorio");
             return NULL;
