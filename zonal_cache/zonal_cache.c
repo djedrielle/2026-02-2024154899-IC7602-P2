@@ -78,7 +78,8 @@ char *leer_dat(char *dir_punto_dat, size_t *cantidad_leidos) {
 int escribir_dat(char *dir_punto_dat, char *respuesta_origen, size_t *largo_salida) {
     FILE *f = fopen(dir_punto_dat, "wb");
     if (f == NULL) return -1;
-    int escritos = fwrite(respuesta_origen, sizeof(char), *largo_salida, f);
+    size_t escritos = fwrite(respuesta_origen, sizeof(char), *largo_salida, f);
+    fclose(f);
     return escritos;
 }
 
@@ -110,13 +111,6 @@ int actualizar_meta(char *dir_punto_meta) {
 }
 
 int escribir_meta(char *dir_punto_meta, char *clave, long tam_bytes, long TTL) {
-    char clave[256];
-    long tamanno;
-    long insercion;
-    long ultimo_acceso;
-    long cantidad_accesos;
-    long expiracion;
-
     Meta m;
     snprintf(m.clave, sizeof(m.clave), "%s", clave);
     m.tamanno = tam_bytes;
@@ -169,8 +163,12 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
     // Extraer el metodo
     // Se coloca en el primer ' ' para obtener el metodo y luego obtener el parametro de la peticion
     char *puntero_fin_buscado = strchr(buffer_entrada, ' ');
+    if (puntero_fin_buscado == NULL) {
+        fprintf(stderr, "Peticion mal formada: no se encontro el metodo\n");
+        return NULL;
+    }
     size_t cant_caracteres = puntero_fin_buscado - buffer_entrada;
-    
+
     char *metodo = malloc(cant_caracteres + 1); // + 1 para agregar el '\0'
     memcpy(metodo, buffer_entrada, cant_caracteres);
     metodo[cant_caracteres] = '\0';
@@ -180,8 +178,13 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
     char *puntero_fin_buscado_anterior = puntero_fin_buscado;
     puntero_fin_buscado_anterior++; // Apuntar al '/'
     puntero_fin_buscado = strchr(puntero_fin_buscado_anterior, ' ');
+    if (puntero_fin_buscado == NULL) {
+        fprintf(stderr, "Peticion mal formada: no se encontro la ruta\n");
+        free(metodo);
+        return NULL;
+    }
     cant_caracteres = puntero_fin_buscado - puntero_fin_buscado_anterior;
-    
+
     char *ruta = malloc(cant_caracteres + 1);
     memcpy(ruta, puntero_fin_buscado_anterior, cant_caracteres);
     ruta[cant_caracteres] = '\0';
@@ -189,8 +192,20 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
 
     // Extraer el host
     char *puntero_inicio_host = strstr(buffer_entrada, "Host: ");
+    if (puntero_inicio_host == NULL) {
+        fprintf(stderr, "Peticion mal formada: falta el encabezado Host\n");
+        free(metodo);
+        free(ruta);
+        return NULL;
+    }
     puntero_inicio_host += 6; // Saltar "Host: "
     puntero_fin_buscado = strchr(puntero_inicio_host, '\r');
+    if (puntero_fin_buscado == NULL) {
+        fprintf(stderr, "Peticion mal formada: el encabezado Host no termina en CRLF\n");
+        free(metodo);
+        free(ruta);
+        return NULL;
+    }
     cant_caracteres = puntero_fin_buscado - puntero_inicio_host;
     char *host = malloc(cant_caracteres + 1);
     size_t i = 0;
@@ -228,11 +243,6 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
         free(ruta);
         free(host);
 
-        if (esta_expirado == -1) {
-            fprintf(stderr, "Error al intentar leer el .meta %s\n", dir_punto_meta);
-            return NULL;
-        }
-
         // Actualizar metadatos
         if (actualizar_meta(dir_punto_meta) == -1) {
             fprintf(stderr, "Error al intentar actualizar los valores del .meta %s\n", dir_punto_meta);
@@ -251,7 +261,7 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
     
     } else {
         // Si no esta creada se crea, mas abajo se trae la informacion del dominio
-        if (!stat(dir_directorio, &st)) {
+        if (stat(dir_directorio, &st)) {
             if (mkdir(dir_directorio, 0777) != 0) {
                 perror("Error al crear el directorio");
                 free(metodo);
@@ -273,19 +283,22 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
             return NULL;
         }
         // Guardar .dat y .meta
-        long tam_bytes;
-        if (tam_bytes = escribir_dat(dir_punto_dat, respuesta_origen, largo_salida)) == -1 {
+        size_t tam_bytes;
+        if ((tam_bytes = escribir_dat(dir_punto_dat, respuesta_origen, largo_salida)) != *largo_salida) {
             printf("Error al intentar escribir el .dat");
+            free(respuesta_origen);
             return NULL;
         }
 
-        if (escribir_meta(dir_punto_meta, clave, tam_bytes)) == -1 {
+        long TTL = 300;
+        if ((escribir_meta(dir_punto_meta, clave, tam_bytes, TTL)) == -1) {
             printf("Error al intentar escribir el .meta");
+            free(respuesta_origen);
             return NULL;
         }
 
         printf("Salida Apache Server: %.*s", (int)*largo_salida, respuesta_origen);
-        
+
         return respuesta_origen;
     }
 }
@@ -330,23 +343,49 @@ int main(void) {
     }
     printf("Zonal Cache escuchando en el puerto %d\n", env_puerto_zonal_cache);
 
-    ssize_t bytes_leidos;
+    char entrada[env_max_tam_entrada];
     while (true) {
         printf("\nEscuchando conexiones...\n");
         socklen_t client_size = sizeof(client_address);
         int client_socket = accept(server_socket, (struct sockaddr *)&client_address, &client_size);
+        if (client_socket < 0) {
+            perror("accept");
+            continue;
+        }
         printf("Cliente conectado, IP: %s, puerto: %i\n", inet_ntoa(client_address.sin_addr), ntohs(client_address.sin_port));
 
-        char entrada[env_max_tam_entrada];
-        while ((bytes_leidos = read(client_socket, entrada, sizeof(entrada))) > 0) {
-            printf("Entrada: %s", entrada);
-            size_t largo_salida = 0;
-            char *respuesta = procesar_entrada(entrada, env_puerto_server_origen, &largo_salida);
-            if (respuesta == NULL) break;
+        // Ensamblar la peticion: TCP es un flujo, read() puede entregarla en varios pedazos.
+        // Se acumula hasta encontrar el "\r\n\r\n" que cierra los encabezados.
+        size_t total = 0;
+        char *fin_encabezados = NULL;
+        while (total < sizeof(entrada) - 1) {
+            ssize_t bytes_leidos = read(client_socket, entrada + total, sizeof(entrada) - 1 - total);
+            if (bytes_leidos < 0) {
+                perror("read");
+                break;
+            }
+            if (bytes_leidos == 0) break; // El cliente cerro la conexion
+            total += bytes_leidos;
+            entrada[total] = '\0';
+            fin_encabezados = strstr(entrada, "\r\n\r\n");
+            if (fin_encabezados != NULL) break; // Ya estan los encabezados completos
+        }
+
+        if (fin_encabezados == NULL) {
+            fprintf(stderr, "Peticion incompleta o mas grande que el buffer (%zu bytes), se descarta\n", total);
+            close(client_socket);
+            continue;
+        }
+
+        printf("Entrada: %s", entrada);
+        size_t largo_salida = 0;
+        char *respuesta = procesar_entrada(entrada, env_puerto_server_origen, &largo_salida);
+        if (respuesta != NULL) {
             send(client_socket, respuesta, largo_salida, MSG_NOSIGNAL);
             free(respuesta);
         }
 
+        // Una peticion por conexion: se responde y se cierra
         close(client_socket);
     }
 
