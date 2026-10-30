@@ -8,7 +8,7 @@
 
 #include "http_cliente.h"
 
-char *http_get(const char *host, const char *puerto, const char *ruta, size_t *largo_salida, int proxy) {
+char *http_get(const char *host, const char *puerto, const char *ruta, size_t *largo_salida, int proxy, const char *encabezados_extra) {
     struct addrinfo hints = {0}, *resultado;
     hints.ai_family   = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
@@ -26,13 +26,15 @@ char *http_get(const char *host, const char *puerto, const char *ruta, size_t *l
     }
     freeaddrinfo(resultado);
 
+    if (encabezados_extra == NULL) encabezados_extra = "";
     char peticion[512];
     int largo = snprintf(peticion, sizeof(peticion),
         "GET %s HTTP/1.1\r\n"
         "Host: %s\r\n"
         "Connection: close\r\n"
+        "%s"
         "\r\n",
-        ruta, host);
+        ruta, host, encabezados_extra);
 
     if (send(sockfd, peticion, (size_t)largo, 0) < 0) {
         perror("send");

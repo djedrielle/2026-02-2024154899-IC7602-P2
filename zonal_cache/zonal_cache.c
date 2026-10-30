@@ -15,6 +15,24 @@
 #include "../comun/variables_entorno.h"
 
 typedef struct {
+    char dominio[256];
+    char origen_host[256];
+    int origen_puerto;
+    long tamanno_maximo;
+    long ttl;
+    int algoritmo;
+    int requiere_auth;
+} ConfigDominio;
+
+enum AlgReemplazo {
+    LRU,
+    LFU,
+    FIFO,
+    MRU,
+    RANDOM 
+};
+
+typedef struct {
     char clave[256];
     long tamanno;
     time_t insercion;
@@ -216,6 +234,8 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
     host[i] = '\0';
     printf("Host: %s\n", host);
 
+    // Consultar la configuracion del dominio
+
     // Hashear host + ruta
     char clave[strlen(host) + strlen(ruta) + 1];
     snprintf(clave, sizeof(clave), "%s%s", host, ruta);
@@ -274,7 +294,7 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
         // Consultar informacion al servidor origen
         char buffer_from_int_to_char[20];
         snprintf(buffer_from_int_to_char, sizeof(buffer_from_int_to_char), "%d", env_puerto_server_origen);
-        char *respuesta_origen = http_get(host, buffer_from_int_to_char, ruta, largo_salida, 1); 
+        char *respuesta_origen = http_get(host, buffer_from_int_to_char, ruta, largo_salida, 1, NULL);
         free(metodo);
         free(ruta);
         free(host);
@@ -303,13 +323,176 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
     }
 }
 
+int extraer_texto(char *inicio_config, char *str_buscar, char *destino, size_t tam_destino) {
+    char *etiqueta = strstr(inicio_config, str_buscar);
+    if (etiqueta == NULL) return -1;
+    etiqueta += strlen(str_buscar);
+    char *fin_texto = strchr(etiqueta, '"');
+    if (fin_texto == NULL) return -1;
+    int largo = fin_texto - etiqueta;
+    snprintf(destino, tam_destino, "%.*s", largo, etiqueta);
+    return 0;
+}
+
+long extraer_int(char *inicio_config, char *str_buscar) {
+    char *etiqueta = strstr(inicio_config, str_buscar);
+    if (etiqueta == NULL) return -1;
+    etiqueta += strlen(str_buscar);
+    char *endptr;
+    long numero = strtol(etiqueta, &endptr, 10);
+    return numero;
+}
+
+int extraer_booleano(char *inicio_config, char *str_buscar) {
+    char *etiqueta = strstr(inicio_config, str_buscar);
+    if (etiqueta == NULL) return -1;
+    etiqueta += strlen(str_buscar);
+    if (strncmp(etiqueta, "true", 4) == 0) {
+        return 1;
+    } else {
+        return 0;
+    }
+}
+
+int obtener_algoritmo(char *algoritmo_texto) {
+    static const char *NOMBRES_ALG[] = { "LRU", "LFU", "FIFO", "MRU", "RANDOM" };
+    for (size_t i = 0; i < sizeof(NOMBRES_ALG)/sizeof(NOMBRES_ALG[0]); i++) {
+        if (!strcmp(NOMBRES_ALG[i], algoritmo_texto)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_max_dominios) {
+    // Leer variables de entorno
+    const char *env_extra_headers = env_texto("EXTRA_HEADERS", "x-config-key: ABCDEFG\r\n");
+    const char *env_node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
+    int env_node_api_port = env_entero("NODE_API_PORT", 3000);
+    size_t largo_salida = 0;
+
+    char buffer_from_int_to_char[20];
+    snprintf(buffer_from_int_to_char, sizeof(buffer_from_int_to_char), "%d", env_node_api_port);
+    char *respuesta_api = http_get(env_node_api_host, buffer_from_int_to_char, "/api/config", &largo_salida, 0, env_extra_headers);
+    if (respuesta_api == NULL) {
+        fprintf(stderr, "config: no se pudo contactar el API en %s:%d (revise NODE_API_HOST y NODE_API_PORT, y que el API este arriba)\n",
+            env_node_api_host, env_node_api_port);
+        return -1;
+    }
+
+    *cantidad_configs = extraer_int(respuesta_api, "\"cantidad\":"); // Parsear la cantidad de hosts
+    if (*cantidad_configs == -1) {
+        fprintf(stderr, "config: la respuesta del API no trae el campo \"cantidad\". Lo recibido fue: %.200s\n", respuesta_api);
+        fprintf(stderr, "config: si dice \"No autorizado\", revise que EXTRA_HEADERS lleve el mismo secreto que CONFIG_API_KEY en el API\n");
+        free(respuesta_api);
+        return -1;
+    }
+    if (*cantidad_configs == 0) {
+        fprintf(stderr, "config: el API no devolvio ningun dominio usable. O la coleccion 'dominios' de Firestore esta vacia,\n");
+        fprintf(stderr, "config: o todos los documentos fueron descartados por mal formados. Consulte /api/config con curl\n");
+        fprintf(stderr, "config: y revise el campo \"descartados\", que trae el motivo de cada uno\n");
+        free(respuesta_api);
+        return -1;
+    }
+    if (*cantidad_configs > env_cant_max_dominios) {
+        fprintf(stderr, "config: el API devolvio %d dominios y el maximo compilado es %d (suba CANT_MAX_DOMINIOS)\n",
+            *cantidad_configs, env_cant_max_dominios);
+        free(respuesta_api);
+        return -1;
+    }
+    // Parsear el resto de la informacion
+    char *inicio_config = strstr(respuesta_api, "\"dominios\":[");
+    if (inicio_config == NULL) {
+        fprintf(stderr, "config: la respuesta trae \"cantidad\" pero no el arreglo \"dominios\". Lo recibido fue: %.200s\n", respuesta_api);
+        free(respuesta_api);
+        return -1;
+    }
+    inicio_config += 12;
+    char *fin_config;
+    for (int i = 0; i < *cantidad_configs; i++) {
+        fin_config = strchr(inicio_config + 1, '}');
+        if (fin_config == NULL) {
+            fprintf(stderr, "config: el JSON se corta en el dominio %d de %d; no se encontro el cierre del objeto\n",
+                i + 1, *cantidad_configs);
+            free(respuesta_api);
+            return -1;
+        }
+        *fin_config = '\0';
+
+        char dominio[256];
+        if (extraer_texto(inicio_config, "\"dominio\":\"", dominio, sizeof(dominio)) == -1) {
+            fprintf(stderr, "config: al dominio %d de %d le falta el campo \"dominio\": %.200s\n",
+                i + 1, *cantidad_configs, inicio_config);
+            free(respuesta_api);
+            return -1;
+        }
+        // De aqui en adelante ya se conoce el nombre del dominio, asi que los
+        // mensajes lo incluyen para poder ubicar el documento en Firestore.
+        char origen_host[256];
+        if (extraer_texto(inicio_config, "\"origen_host\":\"", origen_host, sizeof(origen_host)) == -1) {
+            fprintf(stderr, "config: el dominio '%s' no trae \"origen_host\" como texto (revise que el documento en Firestore lo tenga y no este vacio)\n", dominio);
+            free(respuesta_api);
+            return -1;
+        }
+        char algoritmo_texto[16];
+        if (extraer_texto(inicio_config, "\"algoritmo\":\"", algoritmo_texto, sizeof(algoritmo_texto)) == -1) {
+            fprintf(stderr, "config: el dominio '%s' no trae \"algoritmo\" como texto\n", dominio);
+            free(respuesta_api);
+            return -1;
+        }
+        int int_algoritmo = obtener_algoritmo(algoritmo_texto);
+        if (int_algoritmo == -1) {
+            fprintf(stderr, "config: el dominio '%s' declara el algoritmo '%s', que no es ninguno de LRU, LFU, FIFO, MRU, RANDOM\n",
+                dominio, algoritmo_texto);
+            free(respuesta_api);
+            return -1;
+        }
+        enum AlgReemplazo algoritmo = int_algoritmo;
+        int origen_puerto = extraer_int(inicio_config, "\"origen_puerto\":");
+        long tamanno_maximo = extraer_int(inicio_config, "\"tamanno_maximo\":");
+        long ttl = extraer_int(inicio_config, "\"ttl\":");
+        int requiere_auth = extraer_booleano(inicio_config, "\"requiere_auth\":");
+        if (origen_puerto == -1 || tamanno_maximo == -1 || ttl == -1 || requiere_auth == -1) {
+            fprintf(stderr, "config: al dominio '%s' le falta un campo numerico o booleano ->%s%s%s%s\n",
+                dominio,
+                origen_puerto   == -1 ? " origen_puerto"   : "",
+                tamanno_maximo  == -1 ? " tamanno_maximo"  : "",
+                ttl             == -1 ? " ttl"             : "",
+                requiere_auth   == -1 ? " requiere_auth"   : "");
+            free(respuesta_api);
+            return -1;
+        }
+
+        snprintf(configs[i].dominio, 256, "%s", dominio);
+        snprintf(configs[i].origen_host, 256, "%s", origen_host);
+        configs[i].origen_puerto = origen_puerto;
+        configs[i].algoritmo = algoritmo;
+        configs[i].tamanno_maximo = tamanno_maximo;
+        configs[i].ttl = ttl;
+        configs[i].requiere_auth = requiere_auth;
+
+        *fin_config = '}';
+        inicio_config = fin_config + 2;
+    }
+    free(respuesta_api);
+    return 0;
+}
+
 
 int main(void) {
     // Leer variables de entorno
     int env_max_tam_entrada = env_entero("MAX_TAM_ENTRADA", 1024);
     int env_puerto_zonal_cache = env_entero("ZONAL_PUERTO_IN", 9777);
     int env_puerto_server_origen = env_entero("ORIGEN_PUERTO", 80);
+    int env_cant_max_dominios = env_entero("CANT_MAX_DOMINIOS", 16);
+    
 
+    int cantidad_configs;
+    ConfigDominio configs[env_cant_max_dominios];
+    if (cargar_configs(configs, &cantidad_configs, env_cant_max_dominios) == -1) {
+        fprintf(stderr, "No se pudo cargar la configuracion desde el API\n");
+        return 1;
+    }
 
     int server_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (server_socket < 0) {

@@ -132,7 +132,7 @@ char *consultar_api(char *ruta, struct sockaddr_in cliaddr, const char *env_node
     char buffer_from_int_to_char[20];
     snprintf(buffer_from_int_to_char, sizeof(buffer_from_int_to_char), "%d", env_node_api_port);
     size_t largo_salida;
-    char *json = http_get(env_node_api_host, buffer_from_int_to_char, buffer_ruta, &largo_salida, 0);
+    char *json = http_get(env_node_api_host, buffer_from_int_to_char, buffer_ruta, &largo_salida, 0, NULL);
     // Usar largo_salida en caso de ser necesario. De momento no se utiliza.
     return json;
 }
