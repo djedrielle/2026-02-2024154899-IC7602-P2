@@ -177,7 +177,17 @@ static uint64_t fnv1a(const char *s) {
     return h;
 }
 
-char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_t *largo_salida) {
+int buscar_config(char *host, ConfigDominio *configs, int cantidad_configs, ConfigDominio *config_destino) {
+    for (int i = 0; i < cantidad_configs; i++) {
+        if (!strcmp(host, configs[i].dominio)) {
+            *config_destino = configs[i];
+            return 0
+        }
+    }
+    return -1;
+}
+
+char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantidad_configs, size_t *largo_salida) {
     // Extraer el metodo
     // Se coloca en el primer ' ' para obtener el metodo y luego obtener el parametro de la peticion
     char *puntero_fin_buscado = strchr(buffer_entrada, ' ');
@@ -235,6 +245,14 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
     printf("Host: %s\n", host);
 
     // Consultar la configuracion del dominio
+    ConfigDominio config;
+    if (buscar_config(host, configs, cantidad_configs, &config) == -1) {
+        fprintf(stderr, "No se encontró una configuración para ese host.\n");
+        free(metodo);
+        free(ruta);
+        free(host);
+        return NULL;
+    }
 
     // Hashear host + ruta
     char clave[strlen(host) + strlen(ruta) + 1];
@@ -293,8 +311,8 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
         
         // Consultar informacion al servidor origen
         char buffer_from_int_to_char[20];
-        snprintf(buffer_from_int_to_char, sizeof(buffer_from_int_to_char), "%d", env_puerto_server_origen);
-        char *respuesta_origen = http_get(host, buffer_from_int_to_char, ruta, largo_salida, 1, NULL);
+        snprintf(buffer_from_int_to_char, sizeof(buffer_from_int_to_char), "%d", config.origen_puerto);
+        char *respuesta_origen = http_get(config.origen_host, buffer_from_int_to_char, ruta, largo_salida, 1, NULL);
         free(metodo);
         free(ruta);
         free(host);
@@ -310,8 +328,7 @@ char *procesar_entrada(char* buffer_entrada, int env_puerto_server_origen, size_
             return NULL;
         }
 
-        long TTL = 300;
-        if ((escribir_meta(dir_punto_meta, clave, tam_bytes, TTL)) == -1) {
+        if ((escribir_meta(dir_punto_meta, clave, tam_bytes, config.ttl)) == -1) {
             printf("Error al intentar escribir el .meta");
             free(respuesta_origen);
             return NULL;
@@ -483,7 +500,6 @@ int main(void) {
     // Leer variables de entorno
     int env_max_tam_entrada = env_entero("MAX_TAM_ENTRADA", 1024);
     int env_puerto_zonal_cache = env_entero("ZONAL_PUERTO_IN", 9777);
-    int env_puerto_server_origen = env_entero("ORIGEN_PUERTO", 80);
     int env_cant_max_dominios = env_entero("CANT_MAX_DOMINIOS", 16);
     
 
@@ -562,7 +578,7 @@ int main(void) {
 
         printf("Entrada: %s", entrada);
         size_t largo_salida = 0;
-        char *respuesta = procesar_entrada(entrada, env_puerto_server_origen, &largo_salida);
+        char *respuesta = procesar_entrada(entrada, configs, cantidad_configs, &largo_salida);
         if (respuesta != NULL) {
             send(client_socket, respuesta, largo_salida, MSG_NOSIGNAL);
             free(respuesta);
