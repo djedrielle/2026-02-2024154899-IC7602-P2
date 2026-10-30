@@ -10,19 +10,15 @@
 #include <sys/stat.h>
 #include <stdint.h>
 #include <time.h>
+#include <dirent.h>
 
 #include "../comun/http_cliente.h"
 #include "../comun/variables_entorno.h"
 
 typedef struct {
-    char dominio[256];
-    char origen_host[256];
-    int origen_puerto;
-    long tamanno_maximo;
-    long ttl;
-    int algoritmo;
-    int requiere_auth;
-} ConfigDominio;
+    char hash[17];     // el nombre sin el ".meta"
+    Meta meta;
+} EntradaCache;
 
 enum AlgReemplazo {
     LRU,
@@ -31,6 +27,16 @@ enum AlgReemplazo {
     MRU,
     RANDOM 
 };
+
+typedef struct {
+    char dominio[256];
+    char origen_host[256];
+    int origen_puerto;
+    long tamanno_maximo;
+    long ttl;
+    enum AlgReemplazo algoritmo;
+    int requiere_auth;
+} ConfigDominio;
 
 typedef struct {
     char clave[256];
@@ -181,11 +187,47 @@ int buscar_config(char *host, ConfigDominio *configs, int cantidad_configs, Conf
     for (int i = 0; i < cantidad_configs; i++) {
         if (!strcmp(host, configs[i].dominio)) {
             *config_destino = configs[i];
-            return 0
+            return 0;
         }
     }
     return -1;
 }
+
+int inventario(EntradaCache *entradas_cache, size_t *tamanno_total, char *dir_directorio) {
+    DIR *dir = opendir(dir_directorio);
+    struct dirent *dp;
+    errno = 0;
+    int cantidad_entradas = 0;
+    while ((dp = readdir(dir)) != NULL) {
+        if ((largo > 5) && (strcmp(dp->d_name + largo - 5, ".meta"))) {
+            cantidad_entradas++;
+        }
+    }
+    if (errno != 0) return -1;
+    EntradaCache *ptr_entradas_cache = malloc(sizeof(EntradaCache) * cantidad_entradas);
+    int largo;
+    int i = 0;
+    while ((dp = readdir(dir)) != NULL) {
+        largo = strlen(dp->d_name);
+        if ((largo > 5) && (strcmp(dp->d_name + largo - 5, ".meta"))) {
+            char ruta[sizeof(dir_directorio) + 1 + largo + 5];
+            snprintf(ruta, sizeof(ruta), "%s/%s", dir_directorio, dp->d_name);
+            Meta m;
+            if (leer_meta(ruta, &m) == -1) {
+                return -1;
+            }
+            *tamanno_total += m.tamanno;
+            char hash[17];
+            snprintf(hash, sizeof, "%.*s", largo - 5, dp->d_name);
+            hash[17] = '\0';
+            ptr_entradas_cache[i] = {hash, m};
+        }
+    }
+    closedir(dir);
+    entradas_cache = ptr_entradas_cache;
+    return 0;
+}
+
 
 char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantidad_configs, size_t *largo_salida) {
     // Extraer el metodo
@@ -320,6 +362,14 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
             printf("No se puede recuperar información del origen");
             return NULL;
         }
+
+        // Obtener el tamanno total del directorio cache del dominio y una lista de las entradas presentes en cache
+        size_t tamanno_total = 0;
+        EntradaCache *entradas_cache;
+        if (inventario(entradas_cache, &tamanno_total, dir_directorio) == -1) {
+            return -1;
+        }
+
         // Guardar .dat y .meta
         size_t tam_bytes;
         if ((tam_bytes = escribir_dat(dir_punto_dat, respuesta_origen, largo_salida)) != *largo_salida) {
