@@ -208,7 +208,11 @@ int inventario(EntradaCache **entradas_cache, size_t *tamanno_total, int *cantid
             (*cantidad_entradas)++;
         }
     }
-    if (errno != 0) return -1;
+    if (errno != 0) {
+        closedir(dir);
+        return -1;
+    }
+    
     EntradaCache *ptr_entradas_cache = malloc(sizeof(EntradaCache) * *cantidad_entradas);
     int i = 0;
     rewinddir(dir);
@@ -219,6 +223,16 @@ int inventario(EntradaCache **entradas_cache, size_t *tamanno_total, int *cantid
             snprintf(ruta, sizeof(ruta), "%s/%s", dir_directorio, dp->d_name);
             Meta m;
             if (leer_meta(ruta, &m) == -1) {
+                // Si el ".meta" esta corrupto entonces se eliminan los dos archivos para que el cache se autorepare
+                char ruta_meta[strlen(dir_directorio) + 1 + 16 + 5];
+                char ruta_dat[strlen(dir_directorio) + 1 + 16 + 4];
+                snprintf(ruta_meta, sizeof(ruta_meta), "%s/%s", dir_directorio, dp->d_name);
+                snprintf(ruta_dat, sizeof(ruta_dat), "%s/%s.dat", dir_directorio, dp->d_name + largo - 4);
+                if (remove(ruta_meta) || remove(ruta_dat)) {
+                    fprintf(stderr, "Error al intentar eliminar los archivos %s y %s\n", ruta_meta, ruta_dat);
+                }
+                free(ptr_entradas_cache);
+                closedir(dir);
                 return -1;
             }
             *tamanno_total += m.tamanno;
@@ -226,20 +240,8 @@ int inventario(EntradaCache **entradas_cache, size_t *tamanno_total, int *cantid
             snprintf(hash, sizeof(hash), "%.*s", largo - 5, dp->d_name);
             snprintf(ptr_entradas_cache[i].hash, 17, "%s", hash);
             ptr_entradas_cache[i].meta = m;
-        } else (
-            // Si el ".meta" esta corrupto entonces se eliminan los dos archivos para que el cache se autorepare
-            char ruta_meta[sizeof(dir_directorio) + 1 + 16 + 5];
-            char ruta_dat[sizeof(dir_directorio) + 1 + 16 + 4];
-            snprintf(ruta_meta, sizeof(ruta_meta), "%s/%s.meta", dir_directorio, dp->d_name);
-            snprintf(ruta_dat, sizeof(ruta_dat), "%s/%s.dat", dir_directorio, dp->d_name);
-            if (remove(ruta_meta) || remove(ruta_dat)) {
-                fprintf(stderr, "Error al intentar eliminar los archivos %s y %s\n", ruta_meta, ruta_dat);
-                return NULL;
-            }
-            free(ptr_entradas_cache);
-            closedir(dir);
-            return -1;
-        )
+            i++;
+        }
     }
     closedir(dir);
     *entradas_cache = ptr_entradas_cache;
@@ -410,13 +412,13 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
         free(ruta);
         free(host);
         if (respuesta_origen == NULL) {
-            printf("No se puede recuperar información del origen");
+            fprintf(stderr, "No se puede recuperar información del origen");
             return NULL;
         }
 
         // Si el largo de la salida es mayor al tamanno maximo del dominio, entonces servimos la respuesta sin cachear
         if (*largo_salida > config.tamanno_maximo) {
-            printf("Esta salida se sirve sin cachear. El tamanno del recurso es mayor al tamanno del dominio. tam_recurso = %d, tam_max_dominio = %d", (int)*largo_salida, config.tamanno_maximo);
+            fprintf(stderr, "Esta salida se sirve sin cachear. El tamanno del recurso es mayor al tamanno del dominio. tam_recurso = %d, tam_max_dominio = %ld", (int)*largo_salida, config.tamanno_maximo);
             return respuesta_origen;
         }
 
@@ -438,10 +440,9 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
                 fprintf(stderr, "Error al intentar eliminar los archivos %s y %s\n", ruta_meta, ruta_dat);
                 return NULL;
             }
-            tamanno_total -= entradas_cache[indice_victima].m.tamanno;
-            entradas_cache[indice_victima] = entradas_cache[cantidad_entradas];
+            tamanno_total -= entradas_cache[indice_victima].meta.tamanno;
+            entradas_cache[indice_victima] = entradas_cache[cantidad_entradas - 1];
             cantidad_entradas--;
-            i++;
         }
 
         free(entradas_cache);
