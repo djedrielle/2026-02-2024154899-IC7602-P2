@@ -1,5 +1,5 @@
 import { listar_config_dominios } from '../../repos/dominios_repo.js';
-import { config_autorizada } from '../../lib/auth_interna.js';
+import { peticion_interna_autorizada } from '../../lib/auth_interna.js';
 
 /* Lista completa de dominios configurados.
  * El Zonal Cache la consulta una sola vez al arrancar y la guarda en memoria,
@@ -9,7 +9,7 @@ export default async function handler(req, res) {
         return res.status(405).json({ error: 'Método no permitido' });
     }
 
-    if (!config_autorizada(req)) {
+    if (!peticion_interna_autorizada(req)) {
         return res.status(401).json({ error: 'No autorizado' });
     }
 

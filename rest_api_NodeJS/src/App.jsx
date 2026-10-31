@@ -1,5 +1,5 @@
 import { Routes, Route, NavLink } from 'react-router'
-import { PaginaLogin } from './paginas/PaginaLogin.js'
+import { PaginaLogin } from './paginas/PaginaLogin.jsx'
 import './App.css'
 
 function App() {

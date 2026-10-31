@@ -5,7 +5,9 @@
  * El secreto viaja en el encabezado x-config-key y vive en una variable de
  * entorno a los dos lados: en Vercel para el API, y en un Secret de Kubernetes
  * para el cache. */
-export function config_autorizada(req) {
+/* Usada por todos los endpoints de consumo interno (configuracion y validacion
+ * de sesiones), no solo por los de configuracion. */
+export function peticion_interna_autorizada(req) {
     const esperado = process.env.CONFIG_API_KEY;
 
     // Si no hay secreto configurado se niega todo, en vez de quedar abierto.
