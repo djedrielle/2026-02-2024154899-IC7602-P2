@@ -442,10 +442,13 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
         if (api_key != NULL) {
             api_key += 11;
             if (strncmp(api_key, config.api_key, fin_api_key - api_key)) {
-                // No coincide -> 401
+                free(metodo);
+                free(ruta);
+                free(host);
+                return respuesta_401(largo_salida);
             }
         } else {
-            // usuario y contrasenna
+            return respuesta_302("https://<direccion_login_ui>", largo_salida)
         }
     }
 
