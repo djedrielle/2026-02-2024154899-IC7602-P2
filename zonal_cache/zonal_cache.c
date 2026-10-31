@@ -214,6 +214,10 @@ int inventario(EntradaCache **entradas_cache, size_t *tamanno_total, int *cantid
     }
     
     EntradaCache *ptr_entradas_cache = malloc(sizeof(EntradaCache) * *cantidad_entradas);
+    if (ptr_entradas_cache == NULL) {
+        closedir(dir);
+        return -1;
+    }
     int i = 0;
     rewinddir(dir);
     while ((dp = readdir(dir)) != NULL) {
@@ -224,10 +228,10 @@ int inventario(EntradaCache **entradas_cache, size_t *tamanno_total, int *cantid
             Meta m;
             if (leer_meta(ruta, &m) == -1) {
                 // Si el ".meta" esta corrupto entonces se eliminan los dos archivos para que el cache se autorepare
-                char ruta_meta[strlen(dir_directorio) + 1 + 16 + 5];
-                char ruta_dat[strlen(dir_directorio) + 1 + 16 + 4];
+                char ruta_meta[strlen(dir_directorio) + 1 + 1 + 16 + 5];
+                char ruta_dat[strlen(dir_directorio) + 1 + 1 + 16 + 4];
                 snprintf(ruta_meta, sizeof(ruta_meta), "%s/%s", dir_directorio, dp->d_name);
-                snprintf(ruta_dat, sizeof(ruta_dat), "%s/%s.dat", dir_directorio, dp->d_name + largo - 4);
+                snprintf(ruta_dat, sizeof(ruta_dat), "%s/%.*s.dat", dir_directorio, largo - 5, dp->d_name);
                 if (remove(ruta_meta) || remove(ruta_dat)) {
                     fprintf(stderr, "Error al intentar eliminar los archivos %s y %s\n", ruta_meta, ruta_dat);
                 }
@@ -438,6 +442,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
             snprintf(ruta_dat, sizeof(ruta_dat), "%s/%s.dat", dir_directorio, entradas_cache[indice_victima].hash);
             if (remove(ruta_meta) || remove(ruta_dat)) {
                 fprintf(stderr, "Error al intentar eliminar los archivos %s y %s\n", ruta_meta, ruta_dat);
+                free(entradas_cache);
                 return NULL;
             }
             tamanno_total -= entradas_cache[indice_victima].meta.tamanno;
