@@ -30,9 +30,6 @@ function normalizar(dominio, datos) {
     config.ttl = Number(config.ttl);
     config.requiere_auth = Boolean(config.requiere_auth);
 
-    // La api_key nunca sale del repositorio: se compara aqui, no se publica.
-    delete config.api_key;
-
     return config;
 }
 
@@ -90,14 +87,4 @@ export async function listar_config_dominios() {
     }
 
     return { dominios, descartados };
-}
-
-/* Valida una x-api-key contra la guardada en el documento del dominio.
- * Se consulta en el momento de la peticion y no se expone por ningun endpoint. */
-export async function validar_api_key(dominio, api_key) {
-    if (!api_key) return false;
-    const doc = await db.collection('dominios').doc(dominio).get();
-    if (!doc.exists) return false;
-    const esperada = doc.data().api_key;
-    return typeof esperada === 'string' && esperada.length > 0 && esperada === api_key;
 }

@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
@@ -31,6 +32,7 @@ typedef struct {
     long ttl;
     enum AlgReemplazo algoritmo;
     int requiere_auth;
+    char api_key[128];
 } ConfigDominio;
 
 typedef struct {
@@ -286,6 +288,86 @@ int elegir_victima(EntradaCache *entradas_cache, enum AlgReemplazo algoritmo, in
     return indice_mejor;
 }
 
+/* Arma una respuesta HTTP completa en memoria del monton.
+ *
+ * El resultado se devuelve tal cual desde procesar_entrada(), y main() lo libera
+ * con free() despues del send(). Por eso NO puede ser un literal de cadena ni un
+ * arreglo estatico: free() sobre memoria que no vino de malloc termina el proceso.
+ *
+ * encabezados_extra puede ser NULL; si no lo es, debe venir ya terminado en "\r\n".
+ * cuerpo puede ser NULL, y en ese caso la respuesta va sin cuerpo (Content-Length: 0).
+ *
+ * Devuelve NULL si no hay memoria. Escribe el largo total en *largo_salida. */
+char *construir_respuesta_http(int codigo, const char *razon, const char *encabezados_extra, const char *cuerpo, size_t *largo_salida) {
+    if (encabezados_extra == NULL) encabezados_extra = "";
+    if (cuerpo == NULL) cuerpo = "";
+
+    const char *plantilla =
+        "HTTP/1.1 %d %s\r\n"
+        "Content-Type: text/plain; charset=utf-8\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n"
+        "%s"
+        "\r\n"
+        "%s";
+
+    size_t largo_cuerpo = strlen(cuerpo);
+
+    /* Primera pasada con destino NULL y tamanno 0: snprintf no escribe nada y
+     * devuelve cuantos caracteres habria necesitado. Asi se pide exactamente
+     * la memoria que hace falta, sin adivinar un tamanno. */
+    int necesarios = snprintf(NULL, 0, plantilla, codigo, razon, largo_cuerpo, encabezados_extra, cuerpo);
+    if (necesarios < 0) return NULL;
+
+    char *respuesta = malloc((size_t)necesarios + 1); // +1 por el '\0'
+    if (respuesta == NULL) return NULL;
+
+    int escritos = snprintf(respuesta, (size_t)necesarios + 1, plantilla, codigo, razon, largo_cuerpo, encabezados_extra, cuerpo);
+    if (escritos != necesarios) {
+        free(respuesta);
+        return NULL;
+    }
+
+    /* El largo es el de la respuesta sin el '\0': ese terminador existe para poder
+     * tratarla como cadena, pero no se transmite. */
+    *largo_salida = (size_t)escritos;
+    return respuesta;
+}
+
+/* 401 para una credencial ausente o invalida en un dominio que exige autenticacion.
+ * El encabezado WWW-Authenticate es lo que indica al cliente como autenticarse;
+ * un 401 sin el esta incompleto segun el RFC 7235. */
+char *respuesta_401(size_t *largo_salida) {
+    return construir_respuesta_http(401, "Unauthorized",
+        "WWW-Authenticate: ApiKey realm=\"zonal-cache\"\r\n",
+        "401 Unauthorized: la credencial es invalida o no fue enviada.\n",
+        largo_salida);
+}
+
+/* 302 hacia el formulario del UI, para una peticion sin credenciales a un dominio
+ * protegido. El navegador sigue el Location y el usuario se autentica alla. */
+char *respuesta_302(const char *url_login, size_t *largo_salida) {
+    char encabezado[1024];
+    snprintf(encabezado, sizeof(encabezado), "Location: %s\r\n", url_login);
+    return construir_respuesta_http(302, "Found", encabezado,
+        "302 Found: se requiere autenticacion, siga el encabezado Location.\n",
+        largo_salida);
+}
+
+/* 404 para un Host que no tiene configuracion en Firestore. */
+char *respuesta_404(size_t *largo_salida) {
+    return construir_respuesta_http(404, "Not Found", NULL,
+        "404 Not Found: el dominio solicitado no esta configurado en esta cache.\n",
+        largo_salida);
+}
+
+/* 502 cuando el servidor origen no responde o la cache no pudo servir el recurso. */
+char *respuesta_502(size_t *largo_salida) {
+    return construir_respuesta_http(502, "Bad Gateway", NULL,
+        "502 Bad Gateway: no se pudo obtener el recurso del servidor origen.\n",
+        largo_salida);
+}
+
 char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantidad_configs, size_t *largo_salida) {
     // Extraer el metodo
     // Se coloca en el primer ' ' para obtener el metodo y luego obtener el parametro de la peticion
@@ -351,6 +433,20 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
         free(ruta);
         free(host);
         return NULL;
+    }
+
+    // Verificar autenticacion
+    char *api_key = strcasestr(buffer_entrada, "x-api-key: ");
+    char *fin_api_key = strchr(api_key, '\r');
+    if (config.requiere_auth) {
+        if (api_key != NULL) {
+            api_key += 11;
+            if (strncmp(api_key, config.api_key, fin_api_key - api_key)) {
+                // No coincide -> 401
+            }
+        } else {
+            // usuario y contrasenna
+        }
     }
 
     // Hashear host + ruta
@@ -496,7 +592,7 @@ int extraer_booleano(char *inicio_config, char *str_buscar) {
     char *etiqueta = strstr(inicio_config, str_buscar);
     if (etiqueta == NULL) return -1;
     etiqueta += strlen(str_buscar);
-    if (strncmp(etiqueta, "true", 4) == 0) {
+    if ((etiqueta, "true", 4) == 0) {
         return 1;
     } else {
         return 0;
@@ -601,6 +697,14 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
         long tamanno_maximo = extraer_int(inicio_config, "\"tamanno_maximo\":");
         long ttl = extraer_int(inicio_config, "\"ttl\":");
         int requiere_auth = extraer_booleano(inicio_config, "\"requiere_auth\":");
+        char api_key[128];
+        if ((extraer_texto(inicio_config, "\"api_key\":\"", api_key, sizeof(api_key)) == -1) && requiere_auth) {
+            fprintf(stderr, "config: al dominio %d de %d le falta el campo \"api_key\": %.200s\n", i + 1, *cantidad_configs, inicio_config);
+            free(respuesta_api);
+            return -1;
+        }
+        
+        // Validar que la informacion se recupere bien
         if (origen_puerto == -1 || tamanno_maximo == -1 || ttl == -1 || requiere_auth == -1) {
             fprintf(stderr, "config: al dominio '%s' le falta un campo numerico o booleano ->%s%s%s%s\n",
                 dominio,
@@ -614,6 +718,7 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
 
         snprintf(configs[i].dominio, 256, "%s", dominio);
         snprintf(configs[i].origen_host, 256, "%s", origen_host);
+        snprintf(configs[i].api_key, 128, "%s", api_key);
         configs[i].origen_puerto = origen_puerto;
         configs[i].algoritmo = algoritmo;
         configs[i].tamanno_maximo = tamanno_maximo;
