@@ -368,6 +368,18 @@ char *respuesta_502(size_t *largo_salida) {
         largo_salida);
 }
 
+char *consultar_node_api(ruta) {
+    // Leer variables de entorno
+    const char *env_extra_headers = env_texto("EXTRA_HEADERS", "x-config-key: ABCDEFG\r\n");
+    const char *env_node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
+    int env_node_api_port = env_entero("NODE_API_PORT", 3000);
+    size_t largo_salida = 0;
+
+    char buffer_from_int_to_char[20];
+    snprintf(buffer_from_int_to_char, sizeof(buffer_from_int_to_char), "%d", env_node_api_port);
+    return http_get(env_node_api_host, buffer_from_int_to_char, ruta, &largo_salida, 0, env_extra_headers);
+}
+
 char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantidad_configs, size_t *largo_salida) {
     // Extraer el metodo
     // Se coloca en el primer ' ' para obtener el metodo y luego obtener el parametro de la peticion
@@ -397,13 +409,19 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
     char *ruta = malloc(cant_caracteres + 1);
     memcpy(ruta, puntero_fin_buscado_anterior, cant_caracteres);
     ruta[cant_caracteres] = '\0';
+    char *session = strstr(ruta, "?session=");
+    if (session != NULL) {
+        *session = '\0';
+        session += 9;
+        tam_token = puntero_fin_buscado - session;
+    }
     printf("Ruta: %s\n", ruta);
 
     // Extraer el host
     char *puntero_inicio_host = strstr(buffer_entrada, "Host: ");
     if (puntero_inicio_host == NULL) {
         fprintf(stderr, "Peticion mal formada: falta el encabezado Host\n");
-        free(metodo);
+        free(metodo);cant_caracteres
         free(ruta);
         return NULL;
     }
@@ -447,8 +465,23 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
                 free(host);
                 return respuesta_401(largo_salida);
             }
+        } else if (session != NULL) {
+            char *buffer_ruta[12 + strlen(session) + 1];
+            snprintf(buffer_ruta, sizeof(buffer_ruta), "%s%s", "/api/sesion/", session)
+            char *respuesta_api = consultar_node_api(buffer_ruta);
+            if (respuesta_api == NULL) {
+                fprintf(stderr, "config: no se pudo contactar el API (revise NODE_API_HOST y NODE_API_PORT, y que el API este arriba)\n");
+                return -1;
+            }
+            if (strncmp(respuesta_api + 10, "true", 4)) {
+                return respuesta_401(largo_salida);
+            }
         } else {
-            return respuesta_302("https://<direccion_login_ui>", largo_salida)
+            const char *env_node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
+            int env_node_api_port = env_entero("NODE_API_PORT", 3000);
+            char ruta_location[256];
+            snprintf(ruta_location, sizeof(ruta_location), "https://%s:%d/login?redirect=%s", env_node_api_host, env_node_api_port, host);
+            return respuesta_302(ruta_location, largo_salida);
         }
     }
 
@@ -613,18 +646,9 @@ int obtener_algoritmo(char *algoritmo_texto) {
 }
 
 int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_max_dominios) {
-    // Leer variables de entorno
-    const char *env_extra_headers = env_texto("EXTRA_HEADERS", "x-config-key: ABCDEFG\r\n");
-    const char *env_node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
-    int env_node_api_port = env_entero("NODE_API_PORT", 3000);
-    size_t largo_salida = 0;
-
-    char buffer_from_int_to_char[20];
-    snprintf(buffer_from_int_to_char, sizeof(buffer_from_int_to_char), "%d", env_node_api_port);
-    char *respuesta_api = http_get(env_node_api_host, buffer_from_int_to_char, "/api/config", &largo_salida, 0, env_extra_headers);
+    char *respuesta_api = consultar_node_api("/api/config");
     if (respuesta_api == NULL) {
-        fprintf(stderr, "config: no se pudo contactar el API en %s:%d (revise NODE_API_HOST y NODE_API_PORT, y que el API este arriba)\n",
-            env_node_api_host, env_node_api_port);
+        fprintf(stderr, "config: no se pudo contactar el API (revise NODE_API_HOST y NODE_API_PORT, y que el API este arriba)\n");
         return -1;
     }
 
