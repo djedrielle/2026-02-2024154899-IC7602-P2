@@ -15,11 +15,6 @@
 #include "../comun/http_cliente.h"
 #include "../comun/variables_entorno.h"
 
-typedef struct {
-    char hash[17];     // el nombre sin el ".meta"
-    Meta meta;
-} EntradaCache;
-
 enum AlgReemplazo {
     LRU,
     LFU,
@@ -46,6 +41,11 @@ typedef struct {
     long cantidad_accesos;
     time_t expiracion;
 } Meta;
+
+typedef struct {
+    char hash[17];     // el nombre sin el ".meta"
+    Meta meta;
+} EntradaCache;
 
 int leer_meta(char *dir_punto_meta, Meta *salida) {
     FILE *f = fopen(dir_punto_meta, "r");
@@ -193,24 +193,29 @@ int buscar_config(char *host, ConfigDominio *configs, int cantidad_configs, Conf
     return -1;
 }
 
-int inventario(EntradaCache *entradas_cache, size_t *tamanno_total, char *dir_directorio) {
+int inventario(EntradaCache **entradas_cache, size_t *tamanno_total, int *cantidad_entradas, char *dir_directorio) {
     DIR *dir = opendir(dir_directorio);
+    if (dir == NULL) {
+        perror("inventario");
+        return -1;
+    }
     struct dirent *dp;
     errno = 0;
-    int cantidad_entradas = 0;
+    int largo;
     while ((dp = readdir(dir)) != NULL) {
-        if ((largo > 5) && (strcmp(dp->d_name + largo - 5, ".meta"))) {
-            cantidad_entradas++;
+        largo = strlen(dp->d_name);
+        if ((largo > 5) && (!strcmp(dp->d_name + largo - 5, ".meta"))) {
+            (*cantidad_entradas)++;
         }
     }
     if (errno != 0) return -1;
-    EntradaCache *ptr_entradas_cache = malloc(sizeof(EntradaCache) * cantidad_entradas);
-    int largo;
+    EntradaCache *ptr_entradas_cache = malloc(sizeof(EntradaCache) * *cantidad_entradas);
     int i = 0;
+    rewinddir(dir);
     while ((dp = readdir(dir)) != NULL) {
         largo = strlen(dp->d_name);
-        if ((largo > 5) && (strcmp(dp->d_name + largo - 5, ".meta"))) {
-            char ruta[sizeof(dir_directorio) + 1 + largo + 5];
+        if ((largo > 5) && (!strcmp(dp->d_name + largo - 5, ".meta"))) {
+            char ruta[strlen(dir_directorio) + 1 + largo + 5];
             snprintf(ruta, sizeof(ruta), "%s/%s", dir_directorio, dp->d_name);
             Meta m;
             if (leer_meta(ruta, &m) == -1) {
@@ -218,16 +223,62 @@ int inventario(EntradaCache *entradas_cache, size_t *tamanno_total, char *dir_di
             }
             *tamanno_total += m.tamanno;
             char hash[17];
-            snprintf(hash, sizeof, "%.*s", largo - 5, dp->d_name);
-            hash[17] = '\0';
-            ptr_entradas_cache[i] = {hash, m};
-        }
+            snprintf(hash, sizeof(hash), "%.*s", largo - 5, dp->d_name);
+            snprintf(ptr_entradas_cache[i].hash, 17, "%s", hash);
+            ptr_entradas_cache[i].meta = m;
+        } else (
+            // Si el ".meta" esta corrupto entonces se eliminan los dos archivos para que el cache se autorepare
+            char ruta_meta[sizeof(dir_directorio) + 1 + 16 + 5];
+            char ruta_dat[sizeof(dir_directorio) + 1 + 16 + 4];
+            snprintf(ruta_meta, sizeof(ruta_meta), "%s/%s.meta", dir_directorio, dp->d_name);
+            snprintf(ruta_dat, sizeof(ruta_dat), "%s/%s.dat", dir_directorio, dp->d_name);
+            if (remove(ruta_meta) || remove(ruta_dat)) {
+                fprintf(stderr, "Error al intentar eliminar los archivos %s y %s\n", ruta_meta, ruta_dat);
+                return NULL;
+            }
+            free(ptr_entradas_cache);
+            closedir(dir);
+            return -1;
+        )
     }
     closedir(dir);
-    entradas_cache = ptr_entradas_cache;
+    *entradas_cache = ptr_entradas_cache;
     return 0;
 }
 
+int elegir_victima(EntradaCache *entradas_cache, enum AlgReemplazo algoritmo, int cantidad_entradas) {
+    if (algoritmo == RANDOM) {
+        int min = 0;
+        int max = cantidad_entradas - 1;
+        int indice_random = min + rand() % (max - min + 1);
+        return indice_random;
+    }
+    
+    int indice_mejor = 0;
+    for (int i = 0; i < cantidad_entradas; i++) {
+        switch (algoritmo) {
+            case LRU:
+                if (entradas_cache[i].meta.ultimo_acceso < entradas_cache[indice_mejor].meta.ultimo_acceso) indice_mejor = i;
+            break;
+
+            case MRU:
+                if (entradas_cache[i].meta.ultimo_acceso > entradas_cache[indice_mejor].meta.ultimo_acceso) indice_mejor = i;
+            break;
+
+            case LFU:
+                if (entradas_cache[i].meta.cantidad_accesos < entradas_cache[indice_mejor].meta.cantidad_accesos) indice_mejor = i;
+            break;
+
+            case FIFO:
+                if (entradas_cache[i].meta.insercion < entradas_cache[indice_mejor].meta.insercion) indice_mejor = i;
+            break;
+
+            case RANDOM:
+            break;
+        }
+    }
+    return indice_mejor;
+}
 
 char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantidad_configs, size_t *largo_salida) {
     // Extraer el metodo
@@ -363,12 +414,37 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
             return NULL;
         }
 
+        // Si el largo de la salida es mayor al tamanno maximo del dominio, entonces servimos la respuesta sin cachear
+        if (*largo_salida > config.tamanno_maximo) {
+            printf("Esta salida se sirve sin cachear. El tamanno del recurso es mayor al tamanno del dominio. tam_recurso = %d, tam_max_dominio = %d", (int)*largo_salida, config.tamanno_maximo);
+            return respuesta_origen;
+        }
+
         // Obtener el tamanno total del directorio cache del dominio y una lista de las entradas presentes en cache
         size_t tamanno_total = 0;
         EntradaCache *entradas_cache;
-        if (inventario(entradas_cache, &tamanno_total, dir_directorio) == -1) {
-            return -1;
+        int cantidad_entradas = 0;
+        if (inventario(&entradas_cache, &tamanno_total, &cantidad_entradas, dir_directorio) == -1) {
+            return NULL;
         }
+        while (tamanno_total + *largo_salida > config.tamanno_maximo) {
+            int indice_victima = elegir_victima(entradas_cache, config.algoritmo, cantidad_entradas);
+            // Eliminar recurso
+            char ruta_meta[sizeof(dir_directorio) + 1 + 16 + 5];
+            char ruta_dat[sizeof(dir_directorio) + 1 + 16 + 4];
+            snprintf(ruta_meta, sizeof(ruta_meta), "%s/%s.meta", dir_directorio, entradas_cache[indice_victima].hash);
+            snprintf(ruta_dat, sizeof(ruta_dat), "%s/%s.dat", dir_directorio, entradas_cache[indice_victima].hash);
+            if (remove(ruta_meta) || remove(ruta_dat)) {
+                fprintf(stderr, "Error al intentar eliminar los archivos %s y %s\n", ruta_meta, ruta_dat);
+                return NULL;
+            }
+            tamanno_total -= entradas_cache[indice_victima].m.tamanno;
+            entradas_cache[indice_victima] = entradas_cache[cantidad_entradas];
+            cantidad_entradas--;
+            i++;
+        }
+
+        free(entradas_cache);
 
         // Guardar .dat y .meta
         size_t tam_bytes;
@@ -547,6 +623,7 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
 
 
 int main(void) {
+    srand(time(NULL));
     // Leer variables de entorno
     int env_max_tam_entrada = env_entero("MAX_TAM_ENTRADA", 1024);
     int env_puerto_zonal_cache = env_entero("ZONAL_PUERTO_IN", 9777);
