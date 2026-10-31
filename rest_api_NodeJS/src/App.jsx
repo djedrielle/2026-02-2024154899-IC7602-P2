@@ -1,4 +1,5 @@
 import { Routes, Route, NavLink } from 'react-router'
+import { PaginaLogin } from './paginas/PaginaLogin.js'
 import './App.css'
 
 function App() {
@@ -15,6 +16,7 @@ function App() {
       </header>
       <Routes>
         <Route path="/" element={<h1>Zonal Cache - Admin Panel</h1>} />
+        <Route path="/login" element={<PaginaLogin />} />
       </Routes>
     </>
   )
