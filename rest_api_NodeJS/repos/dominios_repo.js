@@ -13,6 +13,11 @@ const POR_DEFECTO = {
 
 const ALGORITMOS_VALIDOS = ['LRU', 'LFU', 'FIFO', 'MRU', 'RANDOM'];
 
+/* Una llave de 16 caracteres ya es impracticable de adivinar por fuerza bruta.
+ * El limite existe para atajar llaves de prueba tipo "123" que alguien deja
+ * puestas y se olvida de cambiar. */
+const LARGO_MINIMO_API_KEY = 16;
+
 /* Une el documento con los valores por defecto y valida el algoritmo.
  * Si el algoritmo no es uno de los cinco, se cae a LRU en lugar de dejar
  * que el cache reciba un nombre que no sabe interpretar. */
@@ -54,6 +59,22 @@ export function validar_config(config) {
 
     if (Number.isFinite(config.origen_puerto) && config.origen_puerto > 65535) {
         problemas.push('origen_puerto debe ser menor o igual a 65535');
+    }
+
+    /* Un dominio que exige autenticacion necesita una api_key real.
+     *
+     * Esto no es cosmetico: el lado C compara con strncmp usando el largo de la
+     * llave guardada, asi que una llave vacia da largo 0, la comparacion devuelve
+     * 0, y CUALQUIER valor de x-api-key autentica. Un documento con
+     * requiere_auth: true y api_key: "" deja el dominio abierto de par en par.
+     *
+     * Se descarta aqui para que el cache nunca reciba esa combinacion. */
+    if (config.requiere_auth) {
+        if (typeof config.api_key !== 'string' || config.api_key.trim() === '') {
+            problemas.push('api_key debe ser un texto no vacio cuando requiere_auth es true');
+        } else if (config.api_key.length < LARGO_MINIMO_API_KEY) {
+            problemas.push(`api_key debe tener al menos ${LARGO_MINIMO_API_KEY} caracteres`);
+        }
     }
 
     return problemas;

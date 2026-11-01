@@ -368,7 +368,7 @@ char *respuesta_502(size_t *largo_salida) {
         largo_salida);
 }
 
-char *consultar_node_api(ruta) {
+char *consultar_node_api(const char *ruta) {
     // Leer variables de entorno
     const char *env_extra_headers = env_texto("EXTRA_HEADERS", "x-config-key: ABCDEFG\r\n");
     const char *env_node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
@@ -378,6 +378,17 @@ char *consultar_node_api(ruta) {
     char buffer_from_int_to_char[20];
     snprintf(buffer_from_int_to_char, sizeof(buffer_from_int_to_char), "%d", env_node_api_port);
     return http_get(env_node_api_host, buffer_from_int_to_char, ruta, &largo_salida, 0, env_extra_headers);
+}
+
+int extraer_booleano(char *inicio_config, char *str_buscar) {
+    char *etiqueta = strstr(inicio_config, str_buscar);
+    if (etiqueta == NULL) return -1;
+    etiqueta += strlen(str_buscar);
+    if (strncmp(etiqueta, "true", 4) == 0) {
+        return 1;
+    } else {
+        return 0;
+    }
 }
 
 char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantidad_configs, size_t *largo_salida) {
@@ -413,7 +424,6 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
     if (session != NULL) {
         *session = '\0';
         session += 9;
-        tam_token = puntero_fin_buscado - session;
     }
     printf("Ruta: %s\n", ruta);
 
@@ -421,7 +431,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
     char *puntero_inicio_host = strstr(buffer_entrada, "Host: ");
     if (puntero_inicio_host == NULL) {
         fprintf(stderr, "Peticion mal formada: falta el encabezado Host\n");
-        free(metodo);cant_caracteres
+        free(metodo);
         free(ruta);
         return NULL;
     }
@@ -455,32 +465,42 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
 
     // Verificar autenticacion
     char *api_key = strcasestr(buffer_entrada, "x-api-key: ");
-    char *fin_api_key = strchr(api_key, '\r');
     if (config.requiere_auth) {
         if (api_key != NULL) {
             api_key += 11;
-            if (strncmp(api_key, config.api_key, fin_api_key - api_key)) {
+            if (strncmp(api_key, config.api_key, strlen(config.api_key))) {
                 free(metodo);
                 free(ruta);
                 free(host);
                 return respuesta_401(largo_salida);
             }
         } else if (session != NULL) {
-            char *buffer_ruta[12 + strlen(session) + 1];
-            snprintf(buffer_ruta, sizeof(buffer_ruta), "%s%s", "/api/sesion/", session)
+            char buffer_ruta[12 + strlen(session) + strlen(host) + 1];
+            snprintf(buffer_ruta, sizeof(buffer_ruta), "/api/sesion/%s?dominio=%s", session, host);
             char *respuesta_api = consultar_node_api(buffer_ruta);
             if (respuesta_api == NULL) {
                 fprintf(stderr, "config: no se pudo contactar el API (revise NODE_API_HOST y NODE_API_PORT, y que el API este arriba)\n");
-                return -1;
+                free(metodo);
+                free(ruta);
+                free(host);
+                return NULL;
             }
-            if (strncmp(respuesta_api + 10, "true", 4)) {
+            if (extraer_booleano(respuesta_api, "\"valida\":") != 1) {
+                free(respuesta_api);
+                free(metodo);
+                free(ruta);
+                free(host);
                 return respuesta_401(largo_salida);
             }
+            free(respuesta_api);
         } else {
             const char *env_node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
-            int env_node_api_port = env_entero("NODE_API_PORT", 3000);
+            int env_ui_port = env_entero("UI_PORT", 5173);
             char ruta_location[256];
-            snprintf(ruta_location, sizeof(ruta_location), "https://%s:%d/login?redirect=%s", env_node_api_host, env_node_api_port, host);
+            snprintf(ruta_location, sizeof(ruta_location), "http://%s:%d/login?redirect=%s%s", env_node_api_host, env_ui_port, host, ruta);
+            free(metodo);
+            free(ruta);
+            free(host);
             return respuesta_302(ruta_location, largo_salida);
         }
     }
@@ -624,17 +644,6 @@ long extraer_int(char *inicio_config, char *str_buscar) {
     return numero;
 }
 
-int extraer_booleano(char *inicio_config, char *str_buscar) {
-    char *etiqueta = strstr(inicio_config, str_buscar);
-    if (etiqueta == NULL) return -1;
-    etiqueta += strlen(str_buscar);
-    if ((etiqueta, "true", 4) == 0) {
-        return 1;
-    } else {
-        return 0;
-    }
-}
-
 int obtener_algoritmo(char *algoritmo_texto) {
     static const char *NOMBRES_ALG[] = { "LRU", "LFU", "FIFO", "MRU", "RANDOM" };
     for (size_t i = 0; i < sizeof(NOMBRES_ALG)/sizeof(NOMBRES_ALG[0]); i++) {
@@ -714,8 +723,7 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
         }
         int int_algoritmo = obtener_algoritmo(algoritmo_texto);
         if (int_algoritmo == -1) {
-            fprintf(stderr, "config: el dominio '%s' declara el algoritmo '%s', que no es ninguno de LRU, LFU, FIFO, MRU, RANDOM\n",
-                dominio, algoritmo_texto);
+            fprintf(stderr, "config: el dominio '%s' declara el algoritmo '%s', que no es ninguno de LRU, LFU, FIFO, MRU, RANDOM\n", dominio, algoritmo_texto);
             free(respuesta_api);
             return -1;
         }
@@ -724,7 +732,7 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
         long tamanno_maximo = extraer_int(inicio_config, "\"tamanno_maximo\":");
         long ttl = extraer_int(inicio_config, "\"ttl\":");
         int requiere_auth = extraer_booleano(inicio_config, "\"requiere_auth\":");
-        char api_key[128];
+        char api_key[128] = {0};
         if ((extraer_texto(inicio_config, "\"api_key\":\"", api_key, sizeof(api_key)) == -1) && requiere_auth) {
             fprintf(stderr, "config: al dominio %d de %d le falta el campo \"api_key\": %.200s\n", i + 1, *cantidad_configs, inicio_config);
             free(respuesta_api);
