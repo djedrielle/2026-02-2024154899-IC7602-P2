@@ -1,5 +1,5 @@
 import { consultar_config_dominio, validar_config } from '../../repos/dominios_repo.js';
-import { config_autorizada } from '../../lib/auth_interna.js';
+import { peticion_interna_autorizada } from '../../lib/auth_interna.js';
 
 /* Configuracion de un solo dominio. Sirve para depurar con curl y para el caso
  * en que el cache quiera recargar un dominio sin reiniciarse. */
@@ -8,7 +8,7 @@ export default async function handler(req, res) {
         return res.status(405).json({ error: 'Método no permitido' });
     }
 
-    if (!config_autorizada(req)) {
+    if (!peticion_interna_autorizada(req)) {
         return res.status(401).json({ error: 'No autorizado' });
     }
 
