@@ -391,7 +391,7 @@ int extraer_booleano(char *inicio_config, char *str_buscar) {
     }
 }
 
-char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantidad_configs, size_t *largo_salida) {
+char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantidad_configs, size_t *largo_salida, const char *env_dir_cache) {
     // Extraer el metodo
     // Se coloca en el primer ' ' para obtener el metodo y luego obtener el parametro de la peticion
     char *puntero_fin_buscado = strchr(buffer_entrada, ' ');
@@ -451,7 +451,14 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
         i++;
     }
     host[i] = '\0';
-    printf("Host: %s\n", host);
+    
+    char *host_completo = malloc(cant_caracteres + 1);
+    i = 0;
+    while (i < cant_caracteres) {
+        host_completo[i] = puntero_inicio_host[i];
+        i++;
+    }
+    printf("Host: %s, completo: %s\n", host, host_completo);
 
     // Consultar la configuracion del dominio
     ConfigDominio config;
@@ -460,6 +467,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
         free(metodo);
         free(ruta);
         free(host);
+        free(host_completo);
         return NULL;
     }
 
@@ -472,6 +480,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
                 free(metodo);
                 free(ruta);
                 free(host);
+                free(host_completo);
                 return respuesta_401(largo_salida);
             }
         } else if (session != NULL) {
@@ -483,6 +492,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
                 free(metodo);
                 free(ruta);
                 free(host);
+                free(host_completo);
                 return NULL;
             }
             if (extraer_booleano(respuesta_api, "\"valida\":") != 1) {
@@ -490,17 +500,20 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
                 free(metodo);
                 free(ruta);
                 free(host);
+                free(host_completo);
                 return respuesta_401(largo_salida);
             }
             free(respuesta_api);
         } else {
+            // Leer variables de entorno
             const char *env_node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
             int env_ui_port = env_entero("UI_PORT", 5173);
             char ruta_location[256];
-            snprintf(ruta_location, sizeof(ruta_location), "http://%s:%d/login?redirect=%s%s", env_node_api_host, env_ui_port, host, ruta);
+            snprintf(ruta_location, sizeof(ruta_location), "http://%s:%d/login?redirect=%s%s", env_node_api_host, env_ui_port, host_completo, ruta);
             free(metodo);
             free(ruta);
             free(host);
+            free(host_completo);
             return respuesta_302(ruta_location, largo_salida);
         }
     }
@@ -515,8 +528,8 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
     // Verificar si se tiene informacion en cache del host correspondiente
     struct stat st = {0};
     
-    char dir_directorio[6 + strlen(host) + 1]; // "cache/" -> 6 caracteres
-    snprintf(dir_directorio, sizeof(dir_directorio), "%s%s", "cache/", host);
+    char dir_directorio[strlen(env_dir_cache) + strlen(host) + 1]; // "cache/" -> 6 caracteres
+    snprintf(dir_directorio, sizeof(dir_directorio), "%s%s", env_dir_cache, host);
 
     // Formar la direccion de los .meta y .dat
     char dir_punto_meta[sizeof(dir_directorio) + 1 + sizeof(hash_clave) + 5]; // +1 por el '/' entre el directorio y el hash. +5 por el ".meta"
@@ -531,6 +544,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
         free(metodo);
         free(ruta);
         free(host);
+        free(host_completo);
 
         // Actualizar metadatos
         if (actualizar_meta(dir_punto_meta) == -1) {
@@ -556,6 +570,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
                 free(metodo);
                 free(ruta);
                 free(host);
+                free(host_completo);
                 return NULL;
             }
         }
@@ -567,6 +582,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
         free(metodo);
         free(ruta);
         free(host);
+        free(host_completo);
         if (respuesta_origen == NULL) {
             fprintf(stderr, "No se puede recuperar información del origen");
             return NULL;
@@ -774,7 +790,7 @@ int main(void) {
     int env_max_tam_entrada = env_entero("MAX_TAM_ENTRADA", 1024);
     int env_puerto_zonal_cache = env_entero("ZONAL_PUERTO_IN", 9777);
     int env_cant_max_dominios = env_entero("CANT_MAX_DOMINIOS", 16);
-    
+    const char *env_dir_cache = env_texto("CACHE_DIR", "cache/");
 
     int cantidad_configs;
     ConfigDominio configs[env_cant_max_dominios];
@@ -804,6 +820,13 @@ int main(void) {
 
     if (bind(server_socket, (struct sockaddr *)&server_address, sizeof(server_address)) < 0) {
         fprintf(stderr, "bind al puerto %d: %s\n", env_puerto_zonal_cache, strerror(errno));
+        close(server_socket);
+        return 1;
+    }
+
+    // Crear el directorio cache
+    if (mkdir(env_dir_cache, 0777) != 0 && errno != EEXIST) {
+        perror("mkdir");
         close(server_socket);
         return 1;
     }
@@ -851,7 +874,7 @@ int main(void) {
 
         printf("Entrada: %s", entrada);
         size_t largo_salida = 0;
-        char *respuesta = procesar_entrada(entrada, configs, cantidad_configs, &largo_salida);
+        char *respuesta = procesar_entrada(entrada, configs, cantidad_configs, &largo_salida, env_dir_cache);
         if (respuesta != NULL) {
             send(client_socket, respuesta, largo_salida, MSG_NOSIGNAL);
             free(respuesta);
