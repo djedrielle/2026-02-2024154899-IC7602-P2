@@ -40,6 +40,8 @@ $(BIN)/interceptor: $(INT_OBJ) $(COMUN_OBJ) | $(BIN)
 $(BIN)/zonal_cache: $(ZC_OBJ) $(COMUN_OBJ) | $(BIN)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
+$(BIN)/zonal_cache: LDFLAGS += -lssl -lcrypto
+
 # Regla generica: cada .c produce su .o dentro de build/, conservando la ruta
 $(OBJ)/%.o: %.c
 	@mkdir -p $(dir $@)
