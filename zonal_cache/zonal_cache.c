@@ -12,6 +12,10 @@
 #include <stdint.h>
 #include <time.h>
 #include <dirent.h>
+#include <limits.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <signal.h>
 
 #include "../comun/http_cliente.h"
 #include "../comun/variables_entorno.h"
@@ -32,6 +36,7 @@ typedef struct {
     long ttl;
     enum AlgReemplazo algoritmo;
     int requiere_auth;
+    int tls;
     char api_key[128];
 } ConfigDominio;
 
@@ -48,6 +53,12 @@ typedef struct {
     char hash[17];     // el nombre sin el ".meta"
     Meta meta;
 } EntradaCache;
+
+typedef struct {
+    int fd;
+    SSL *ssl;
+} Conexion;
+
 
 int leer_meta(char *dir_punto_meta, Meta *salida) {
     FILE *f = fopen(dir_punto_meta, "r");
@@ -373,11 +384,17 @@ char *consultar_node_api(const char *ruta) {
     const char *env_extra_headers = env_texto("EXTRA_HEADERS", "x-config-key: ABCDEFG\r\n");
     const char *env_node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
     int env_node_api_port = env_entero("NODE_API_PORT", 3000);
+    int env_node_api_tls = env_entero("NODE_API_TLS", 0);
     size_t largo_salida = 0;
 
     char buffer_from_int_to_char[20];
     snprintf(buffer_from_int_to_char, sizeof(buffer_from_int_to_char), "%d", env_node_api_port);
-    return http_get(env_node_api_host, buffer_from_int_to_char, ruta, &largo_salida, 0, env_extra_headers);
+    /* NODE_API_TLS va por variable de entorno y no por la configuracion del
+     * dominio, porque la cache necesita hablarle al API antes de tener ninguna
+     * configuracion cargada. Ponerlo en 1 es lo que permite apuntar al deploy
+     * de Vercel, que solo sirve HTTPS. */
+    
+    return http_get(env_node_api_host, buffer_from_int_to_char, ruta, &largo_salida, 0, env_extra_headers, env_node_api_tls);
 }
 
 int extraer_booleano(char *inicio_config, char *str_buscar) {
@@ -507,7 +524,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
         } else {
             // Leer variables de entorno
             const char *env_node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
-            int env_ui_port = env_entero("UI_PORT", 5173);
+            int env_ui_port = env_entero("UI_PORT", 3000);
             char ruta_location[256];
             snprintf(ruta_location, sizeof(ruta_location), "http://%s:%d/login?redirect=%s%s", env_node_api_host, env_ui_port, host_completo, ruta);
             free(metodo);
@@ -528,8 +545,8 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
     // Verificar si se tiene informacion en cache del host correspondiente
     struct stat st = {0};
     
-    char dir_directorio[strlen(env_dir_cache) + strlen(host) + 1]; // "cache/" -> 6 caracteres
-    snprintf(dir_directorio, sizeof(dir_directorio), "%s%s", env_dir_cache, host);
+    char dir_directorio[strlen(env_dir_cache) + strlen(host) + 2]; // +2 por el '/' y el '\0'
+    snprintf(dir_directorio, sizeof(dir_directorio), "%s/%s", env_dir_cache, host);
 
     // Formar la direccion de los .meta y .dat
     char dir_punto_meta[sizeof(dir_directorio) + 1 + sizeof(hash_clave) + 5]; // +1 por el '/' entre el directorio y el hash. +5 por el ".meta"
@@ -578,7 +595,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
         // Consultar informacion al servidor origen
         char buffer_from_int_to_char[20];
         snprintf(buffer_from_int_to_char, sizeof(buffer_from_int_to_char), "%d", config.origen_puerto);
-        char *respuesta_origen = http_get(config.origen_host, buffer_from_int_to_char, ruta, largo_salida, 1, NULL);
+        char *respuesta_origen = http_get(config.origen_host, buffer_from_int_to_char, ruta, largo_salida, 1, NULL, config.tls);
         free(metodo);
         free(ruta);
         free(host);
@@ -731,12 +748,14 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
             free(respuesta_api);
             return -1;
         }
+        
         char algoritmo_texto[16];
         if (extraer_texto(inicio_config, "\"algoritmo\":\"", algoritmo_texto, sizeof(algoritmo_texto)) == -1) {
             fprintf(stderr, "config: el dominio '%s' no trae \"algoritmo\" como texto\n", dominio);
             free(respuesta_api);
             return -1;
         }
+        
         int int_algoritmo = obtener_algoritmo(algoritmo_texto);
         if (int_algoritmo == -1) {
             fprintf(stderr, "config: el dominio '%s' declara el algoritmo '%s', que no es ninguno de LRU, LFU, FIFO, MRU, RANDOM\n", dominio, algoritmo_texto);
@@ -748,6 +767,8 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
         long tamanno_maximo = extraer_int(inicio_config, "\"tamanno_maximo\":");
         long ttl = extraer_int(inicio_config, "\"ttl\":");
         int requiere_auth = extraer_booleano(inicio_config, "\"requiere_auth\":");
+        int tls = extraer_booleano(inicio_config, "\"tls\":");
+
         char api_key[128] = {0};
         if ((extraer_texto(inicio_config, "\"api_key\":\"", api_key, sizeof(api_key)) == -1) && requiere_auth) {
             fprintf(stderr, "config: al dominio %d de %d le falta el campo \"api_key\": %.200s\n", i + 1, *cantidad_configs, inicio_config);
@@ -775,6 +796,7 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
         configs[i].tamanno_maximo = tamanno_maximo;
         configs[i].ttl = ttl;
         configs[i].requiere_auth = requiere_auth;
+        configs[i].tls = tls;
 
         *fin_config = '}';
         inicio_config = fin_config + 2;
@@ -783,14 +805,81 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
     return 0;
 }
 
+ssize_t conexion_leer(Conexion *c, char *ptr_inicio, size_t tam_escribir) {
+    if (c->ssl != NULL) {
+        return SSL_read(c->ssl, ptr_inicio, tam_escribir);
+    } else {
+        return read(c->fd, ptr_inicio, tam_escribir);
+    }
+}
+
+/* Escribe los 'largo' bytes completos en la conexion.
+ *
+ * Tanto send() como SSL_write() pueden transmitir MENOS de lo pedido: cuando el
+ * buffer de salida del socket se llena, devuelven lo que alcanzaron a copiar.
+ * Sin este ciclo una respuesta grande llega truncada, y como el cliente leyo un
+ * Content-Length mayor, se queda esperando bytes que nunca van a salir.
+ *
+ * Devuelve los bytes escritos, o -1 si la conexion fallo. */
+ssize_t conexion_escribir(Conexion *c, const char *datos, size_t largo) {
+    size_t enviados = 0;
+
+    while (enviados < largo) {
+        size_t resto = largo - enviados;
+        ssize_t n;
+
+        if (c->ssl != NULL) {
+            /* SSL_write recibe la longitud como int, asi que se parte el envio
+             * si alguna vez superara ese limite. */
+            int pedir = resto > INT_MAX ? INT_MAX : (int)resto;
+            n = SSL_write(c->ssl, datos + enviados, pedir);
+
+            if (n <= 0) {
+                int motivo = SSL_get_error(c->ssl, (int)n);
+                /* Sobre un socket bloqueante estos dos solo aparecen durante una
+                 * renegociacion: la operacion no fallo, hay que repetirla. */
+                if (motivo == SSL_ERROR_WANT_WRITE || motivo == SSL_ERROR_WANT_READ) continue;
+                fprintf(stderr, "Error al escribir sobre TLS tras %zu de %zu bytes\n", enviados, largo);
+                ERR_print_errors_fp(stderr);
+                return -1;
+            }
+        } else {
+            n = send(c->fd, datos + enviados, resto, 0);
+
+            if (n < 0) {
+                if (errno == EINTR) continue; // una senal interrumpio el envio
+                fprintf(stderr, "Error al escribir tras %zu de %zu bytes: %s\n",
+                    enviados, largo, strerror(errno));
+                return -1;
+            }
+            if (n == 0) break; // el otro extremo ya no recibe
+        }
+
+        enviados += (size_t)n;
+    }
+
+    return (ssize_t)enviados;
+}
+
+void conexion_cerrar(Conexion *c) {
+    if (c->ssl != NULL) {
+        SSL_shutdown(c->ssl);
+        SSL_free(c->ssl);
+    }
+    close(c->fd);
+}
 
 int main(void) {
+    signal(SIGPIPE, SIG_IGN);
     srand(time(NULL));
     // Leer variables de entorno
     int env_max_tam_entrada = env_entero("MAX_TAM_ENTRADA", 1024);
     int env_puerto_zonal_cache = env_entero("ZONAL_PUERTO_IN", 9777);
     int env_cant_max_dominios = env_entero("CANT_MAX_DOMINIOS", 16);
-    const char *env_dir_cache = env_texto("CACHE_DIR", "cache/");
+    const char *env_dir_cache = env_texto("CACHE_DIR", "cache");
+    int env_TLS_habilitado = env_entero("TLS_HABILITADO", 0);
+    const char *env_dir_certificado = env_texto("CERTIFICADO_DIR", "./cert.pem");
+    const char *env_dir_private_key = env_texto("PRIVATE_KEY_DIR", "./clave.pem");
 
     int cantidad_configs;
     ConfigDominio configs[env_cant_max_dominios];
@@ -831,6 +920,46 @@ int main(void) {
         return 1;
     }
 
+    // Crear el contexto SSL (en caso de que sea necesario)
+    SSL_CTX *ctx = NULL;
+    if (env_TLS_habilitado) {
+        ctx = SSL_CTX_new(TLS_server_method());
+        if (ctx == NULL) {
+            fprintf(stderr, "Error al crear el contexto SSL.\n");
+            ERR_print_errors_fp(stderr);
+            close(server_socket);
+            return 1;
+        }
+        if (!SSL_CTX_use_certificate_file(ctx, env_dir_certificado, SSL_FILETYPE_PEM)) {
+            fprintf(stderr, "Error al cargar el certificado.\n");
+            ERR_print_errors_fp(stderr);
+            SSL_CTX_free(ctx);
+            close(server_socket);
+            return 1;
+        }
+        if (!SSL_CTX_use_PrivateKey_file(ctx, env_dir_private_key, SSL_FILETYPE_PEM)) {
+            fprintf(stderr, "Error al cargar la llave privada.\n");
+            ERR_print_errors_fp(stderr);
+            SSL_CTX_free(ctx);
+            close(server_socket);
+            return 1;
+        }
+        if (!SSL_CTX_check_private_key(ctx)) {
+            fprintf(stderr, "La llave privada no corresponde al certificado.\n");
+            ERR_print_errors_fp(stderr);
+            SSL_CTX_free(ctx);
+            close(server_socket);
+            return 1;
+        }
+        if (SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION) != 1) {
+            fprintf(stderr, "Error al establecer la versión mínima de TLS.\n");
+            ERR_print_errors_fp(stderr);
+            SSL_CTX_free(ctx);
+            close(server_socket);
+            return 1;
+        }
+    }
+
     if (listen(server_socket, 10) < 0) {
         perror("listen");
         close(server_socket);
@@ -848,15 +977,46 @@ int main(void) {
             continue;
         }
         printf("Cliente conectado, IP: %s, puerto: %i\n", inet_ntoa(client_address.sin_addr), ntohs(client_address.sin_port));
-
+        
+        Conexion conexion = {client_socket, NULL};
+        // Handshake
+        if (ctx != NULL) {
+            SSL *ssl = SSL_new(ctx);
+            if (ssl == NULL) {
+                fprintf(stderr, "Error al crear el puntero SSL.\n");
+                ERR_print_errors_fp(stderr);
+                close(client_socket);
+                continue;
+            }
+            if (!SSL_set_fd(ssl, conexion.fd)) {
+                fprintf(stderr, "Error al conectar el puntero al descriptor de archivo.\n");
+                ERR_print_errors_fp(stderr);
+                SSL_free(ssl);
+                close(client_socket);
+                continue;
+            }
+            if (SSL_accept(ssl) <= 0) {
+                fprintf(stderr, "Error al ejecutar el handshake.\n");
+                ERR_print_errors_fp(stderr);
+                SSL_free(ssl);
+                close(client_socket);
+                continue;
+            }
+            conexion.ssl = ssl;
+        }
+        
         // Ensamblar la peticion: TCP es un flujo, read() puede entregarla en varios pedazos.
         // Se acumula hasta encontrar el "\r\n\r\n" que cierra los encabezados.
         size_t total = 0;
         char *fin_encabezados = NULL;
         while (total < sizeof(entrada) - 1) {
-            ssize_t bytes_leidos = read(client_socket, entrada + total, sizeof(entrada) - 1 - total);
-            if (bytes_leidos < 0) {
+            ssize_t bytes_leidos = conexion_leer(&conexion, entrada + total, sizeof(entrada) - 1 - total);
+            if (bytes_leidos < 0 && conexion.ssl == NULL) {
                 perror("read");
+                break;
+            } else if (bytes_leidos < 0 && conexion.ssl != NULL) {
+                fprintf(stderr, "Error al leer la entrada del cliente sobre TLS.\n");
+                ERR_print_errors_fp(stderr);
                 break;
             }
             if (bytes_leidos == 0) break; // El cliente cerro la conexion
@@ -868,7 +1028,7 @@ int main(void) {
 
         if (fin_encabezados == NULL) {
             fprintf(stderr, "Peticion incompleta o mas grande que el buffer (%zu bytes), se descarta\n", total);
-            close(client_socket);
+            conexion_cerrar(&conexion);
             continue;
         }
 
@@ -876,15 +1036,17 @@ int main(void) {
         size_t largo_salida = 0;
         char *respuesta = procesar_entrada(entrada, configs, cantidad_configs, &largo_salida, env_dir_cache);
         if (respuesta != NULL) {
-            send(client_socket, respuesta, largo_salida, MSG_NOSIGNAL);
+            ssize_t escritos = conexion_escribir(&conexion, respuesta, largo_salida);
+            if (escritos < 0 || (size_t)escritos != largo_salida) {
+                fprintf(stderr, "La respuesta se entrego incompleta: %zd de %zu bytes\n",
+                    escritos, largo_salida);
+            }
             free(respuesta);
         }
-
         // Una peticion por conexion: se responde y se cierra
-        close(client_socket);
+        conexion_cerrar(&conexion);
     }
-
+    SSL_CTX_free(ctx);
     close(server_socket);
-
     return 0;
 }
