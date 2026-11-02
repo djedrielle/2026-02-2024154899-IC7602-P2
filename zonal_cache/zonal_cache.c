@@ -524,7 +524,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
         } else {
             // Leer variables de entorno
             const char *env_node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
-            int env_ui_port = env_entero("UI_PORT", 5173);
+            int env_ui_port = env_entero("UI_PORT", 3000);
             char ruta_location[256];
             snprintf(ruta_location, sizeof(ruta_location), "http://%s:%d/login?redirect=%s%s", env_node_api_host, env_ui_port, host_completo, ruta);
             free(metodo);
@@ -595,8 +595,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
         // Consultar informacion al servidor origen
         char buffer_from_int_to_char[20];
         snprintf(buffer_from_int_to_char, sizeof(buffer_from_int_to_char), "%d", config.origen_puerto);
-        // TODO: reemplazar el 0 por config.origen_tls cuando se agregue ese campo a Firestore
-        char *respuesta_origen = http_get(config.origen_host, buffer_from_int_to_char, ruta, largo_salida, 1, NULL, 0, config.tls);
+        char *respuesta_origen = http_get(config.origen_host, buffer_from_int_to_char, ruta, largo_salida, 1, NULL, config.tls);
         free(metodo);
         free(ruta);
         free(host);
@@ -757,13 +756,6 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
             return -1;
         }
         
-        char api_key[128] = {0};
-        if ((extraer_texto(inicio_config, "\"api_key\":\"", api_key, sizeof(api_key)) == -1) && requiere_auth) {
-            fprintf(stderr, "config: al dominio %d de %d le falta el campo \"api_key\": %.200s\n", i + 1, *cantidad_configs, inicio_config);
-            free(respuesta_api);
-            return -1;
-        }
-        
         int int_algoritmo = obtener_algoritmo(algoritmo_texto);
         if (int_algoritmo == -1) {
             fprintf(stderr, "config: el dominio '%s' declara el algoritmo '%s', que no es ninguno de LRU, LFU, FIFO, MRU, RANDOM\n", dominio, algoritmo_texto);
@@ -776,6 +768,13 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
         long ttl = extraer_int(inicio_config, "\"ttl\":");
         int requiere_auth = extraer_booleano(inicio_config, "\"requiere_auth\":");
         int tls = extraer_booleano(inicio_config, "\"tls\":");
+
+        char api_key[128] = {0};
+        if ((extraer_texto(inicio_config, "\"api_key\":\"", api_key, sizeof(api_key)) == -1) && requiere_auth) {
+            fprintf(stderr, "config: al dominio %d de %d le falta el campo \"api_key\": %.200s\n", i + 1, *cantidad_configs, inicio_config);
+            free(respuesta_api);
+            return -1;
+        }
         
         // Validar que la informacion se recupere bien
         if (origen_puerto == -1 || tamanno_maximo == -1 || ttl == -1 || requiere_auth == -1) {
