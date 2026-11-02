@@ -408,7 +408,7 @@ int extraer_booleano(char *inicio_config, char *str_buscar) {
     }
 }
 
-char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantidad_configs, size_t *largo_salida, const char *env_dir_cache) {
+char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, ReglaURL *reglas, int cantidad_configs, size_t *largo_salida, const char *env_dir_cache) {
     // Extraer el metodo
     // Se coloca en el primer ' ' para obtener el metodo y luego obtener el parametro de la peticion
     char *puntero_fin_buscado = strchr(buffer_entrada, ' ');
@@ -477,7 +477,9 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
     }
     printf("Host: %s, completo: %s\n", host, host_completo);
 
-    // Consultar la configuracion del dominio
+    // Buscar la configuracion de la dominio
+    // Esto nos sirve porque en caso de que no exista configuracion especifica
+    // para la URL solicitada, entonces se aplica la configuracion del dominio
     ConfigDominio config;
     if (buscar_config(host, configs, cantidad_configs, &config) == -1) {
         fprintf(stderr, "No se encontró una configuración para ese host.\n");
@@ -487,6 +489,20 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
         free(host_completo);
         return NULL;
     }
+
+    // Buscar la configuracion de esta URL
+
+    /*
+        Primero que todo hay que verificar reglas != NULL
+
+        Recorrer reglas buscando la primera entrada donde coincida reglas[i].dominio == host && fnmatch(reglas[i].patron, ruta, 0) == 0
+        Si se encuentra entonces se almacena reglas[i].id
+
+        Luego se vuelve a recorrer reglas buscando la regla con el id almacenado para ver si su "tipo" calza con el de ruta.
+        Si es asi entonces se almacena esta regla en una variable ReglaURL. Si no, entonces se utiliza la configuracion del dominio.
+
+        Para usar la configuracion del dominio se debe crear una variable ReglaURL en la que se almacenaran los valores de la variable ConfigDominio config
+    */
 
     // Verificar autenticacion
     char *api_key = strcasestr(buffer_entrada, "x-api-key: ");
@@ -817,6 +833,12 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
 
     // Ciclo para extraer las reglas por URL
     *cantidad_reglas = extraer_int(respuesta_api, "\"cantidad_reglas\":");
+    if (*cantidad_reglas == 0) {
+        reglas == NULL;
+        fprintf(stderr, "No existen reglas especificas para ninguna URL.\n");
+        free(respuesta_api);
+        return -1;
+    }
     char *inicio_regla = strstr(respuesta_api, "\"reglas\":[");
     if (inicio_regla == NULL) {
         fprintf(stderr, "regla: la respuesta trae \"cantidad_reglas\" pero no el arreglo \"reglas\". Lo recibido fue: %.200s\n", respuesta_api);
@@ -1154,7 +1176,7 @@ int main(void) {
 
         printf("Entrada: %s", entrada);
         size_t largo_salida = 0;
-        char *respuesta = procesar_entrada(entrada, configs, cantidad_configs, &largo_salida, env_dir_cache);
+        char *respuesta = procesar_entrada(entrada, configs, reglas, cantidad_configs, &largo_salida, env_dir_cache);
         if (respuesta != NULL) {
             ssize_t escritos = conexion_escribir(&conexion, respuesta, largo_salida);
             if (escritos < 0 || (size_t)escritos != largo_salida) {
