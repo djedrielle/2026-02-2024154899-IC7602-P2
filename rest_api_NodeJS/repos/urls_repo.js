@@ -125,3 +125,60 @@ export async function borrar_url(email, dominio, id) {
     await coleccion(dominio).doc(id).delete();
     return true;
 }
+
+/* ───────────────── vista para el Zonal Cache ───────────────── */
+
+/* Como el endpoint de configuracion es de consumo interno, aqui no se verifica
+ * propiedad: ya lo hizo peticion_interna_autorizada con el secreto compartido. */
+async function listar_urls_crudas(dominio) {
+    const respuesta = await coleccion(dominio).get();
+    return respuesta.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+}
+
+/* Devuelve las reglas APLANADAS: una entrada por cada combinacion de regla y
+ * tipo de archivo, con el dominio incorporado en cada fila.
+ *
+ * El formato es deliberadamente plano y redundante. El Zonal Cache parsea el
+ * JSON con strstr y delimita cada objeto con el primer '}', asi que un objeto
+ * anidado le cortaria el recorrido en el lugar equivocado. Aplanar aqui evita
+ * reescribir ese parser.
+ *
+ * Vienen ordenadas de mas a menos especifica dentro de cada dominio: el cache
+ * aplica la primera que coincida y no necesita ordenar nada. */
+export async function listar_reglas_planas(dominios) {
+    const filas = [];
+
+    for (const dominio of dominios) {
+        const reglas = await listar_urls_crudas(dominio);
+        reglas.sort((a, b) => especificidad(b.patron) - especificidad(a.patron));
+
+        for (const regla of reglas) {
+            const tipos = Object.entries(regla.tipos_archivo ?? {});
+
+            /* Una regla sin tipos configurados igual se publica, con tipo
+             * "otros": si no, una URL con autenticacion pero sin TTL por tipo
+             * desapareceria de la vista del cache y quedaria sin proteger. */
+            if (tipos.length === 0) {
+                filas.push({
+                    id: regla.id, dominio, patron: regla.patron, tipo: 'otros',
+                    ttl: 300, algoritmo: 'LRU',
+                    tamanno_cache: Number(regla.tamanno_cache),
+                    autenticacion: regla.autenticacion,
+                });
+                continue;
+            }
+
+            for (const [tipo, conf] of tipos) {
+                filas.push({
+                    id: regla.id, dominio, patron: regla.patron, tipo,
+                    ttl: Number(conf.ttl),
+                    algoritmo: String(conf.algoritmo).toUpperCase(),
+                    tamanno_cache: Number(regla.tamanno_cache),
+                    autenticacion: regla.autenticacion,
+                });
+            }
+        }
+    }
+
+    return filas;
+}

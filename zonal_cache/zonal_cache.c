@@ -687,7 +687,18 @@ int obtener_algoritmo(char *algoritmo_texto) {
     return -1;
 }
 
-int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_max_dominios) {
+typedef struct {
+    char id[24];
+    char dominio[256];
+    char patron[256];
+    char tipo[12];
+    long ttl;
+    enum AlgReemplazo algoritmo;
+    long tamanno_cache;
+    int requiere_auth;
+} ReglaURL;
+
+int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_max_dominios, ReglaURL *reglas, int *cantidad_reglas, int env_cant_max_reglas) {
     char *respuesta_api = consultar_node_api("/api/config");
     if (respuesta_api == NULL) {
         fprintf(stderr, "config: no se pudo contactar el API (revise NODE_API_HOST y NODE_API_PORT, y que el API este arriba)\n");
@@ -721,6 +732,8 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
         free(respuesta_api);
         return -1;
     }
+    
+    // Ciclo para parsear los dominios
     inicio_config += 12;
     char *fin_config;
     for (int i = 0; i < *cantidad_configs; i++) {
@@ -801,6 +814,110 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
         *fin_config = '}';
         inicio_config = fin_config + 2;
     }
+
+    // Ciclo para extraer las reglas por URL
+    *cantidad_reglas = extraer_int(respuesta_api, "\"cantidad_reglas\":");
+    char *inicio_regla = strstr(respuesta_api, "\"reglas\":[");
+    if (inicio_regla == NULL) {
+        fprintf(stderr, "regla: la respuesta trae \"cantidad_reglas\" pero no el arreglo \"reglas\". Lo recibido fue: %.200s\n", respuesta_api);
+        free(respuesta_api);
+        return -1;
+    }
+
+    inicio_regla += 10;
+    char *fin_regla;
+    for (int i = 0; i < *cantidad_reglas; i++) {
+        fin_regla = strchr(inicio_regla + 1, '}');
+        if (fin_regla == NULL) {
+            fprintf(stderr, "regla: el JSON se corta en la regla %d de %d; no se encontro el cierre del objeto\n",
+                i + 1, *cantidad_reglas);
+            free(respuesta_api);
+            return -1;
+        }
+        *fin_regla = '\0';
+
+        char id[24];
+        if (extraer_texto(inicio_regla, "\"id\":\"", id, sizeof(id)) == -1) {
+            fprintf(stderr, "regla: a la regla %d de %d le falta el campo \"id\": %.200s\n",
+                i + 1, *cantidad_reglas, inicio_regla);
+            free(respuesta_api);
+            return -1;
+        }
+        char dominio[256];
+        if (extraer_texto(inicio_regla, "\"dominio\":\"", dominio, sizeof(dominio)) == -1) {
+            fprintf(stderr, "regla: a la regla %d de %d le falta el campo \"dominio\": %.200s\n",
+                i + 1, *cantidad_reglas, inicio_regla);
+            free(respuesta_api);
+            return -1;
+        }
+        char patron[256];
+        if (extraer_texto(inicio_regla, "\"patron\":\"", patron, sizeof(patron)) == -1) {
+            fprintf(stderr, "regla: a la regla %d de %d le falta el campo \"patron\": %.200s\n",
+                i + 1, *cantidad_reglas, inicio_regla);
+            free(respuesta_api);
+            return -1;
+        }
+        char tipo[12];
+        if (extraer_texto(inicio_regla, "\"tipo\":\"", tipo, sizeof(tipo)) == -1) {
+            fprintf(stderr, "regla: a la regla %d de %d le falta el campo \"tipo\": %.200s\n",
+                i + 1, *cantidad_reglas, inicio_regla);
+            free(respuesta_api);
+            return -1;
+        }
+        
+        char algoritmo_texto[16];
+        if (extraer_texto(inicio_regla, "\"algoritmo\":\"", algoritmo_texto, sizeof(algoritmo_texto)) == -1) {
+            fprintf(stderr, "regla: la regla '%s' no trae \"algoritmo\" como texto\n", id);
+            free(respuesta_api);
+            return -1;
+        }
+        
+        int int_algoritmo = obtener_algoritmo(algoritmo_texto);
+        if (int_algoritmo == -1) {
+            fprintf(stderr, "regla: la regla '%s' declara el algoritmo '%s', que no es ninguno de LRU, LFU, FIFO, MRU, RANDOM\n", id, algoritmo_texto);
+            free(respuesta_api);
+            return -1;
+        }
+
+        long ttl = extraer_int(inicio_regla, "\"ttl\":");
+        enum AlgReemplazo algoritmo = int_algoritmo;
+        long tamanno_cache = extraer_int(inicio_regla, "\"tamanno_cache\":");
+
+        char autenticacion[24];
+        if (extraer_texto(inicio_regla, "\"autenticacion\":\"", autenticacion, sizeof(autenticacion)) == -1) {
+            fprintf(stderr, "regla: la regla '%s' no trae metodo de \"autenticacion\" valido\n", id);
+            free(respuesta_api);
+            return -1;
+        }
+        
+        int requiere_auth = 0;
+        if (strcmp(autenticacion, "ninguna")) {
+            requiere_auth = 1;
+        }
+        
+        // Validar que la informacion se recupere bien
+        if (tamanno_cache == -1 || ttl == -1 || requiere_auth == -1) {
+            fprintf(stderr, "regla: la regla '%s' le falta un campo numerico o booleano ->%s%s%s%s\n",
+                id,
+                tamanno_cache  == -1 ? " tamanno_cache"  : "",
+                ttl             == -1 ? " ttl"             : "",
+                requiere_auth   == -1 ? " requiere_auth"   : "");
+            free(respuesta_api);
+            return -1;
+        }
+
+        snprintf(reglas[i].id, 24, "%s", id);
+        snprintf(reglas[i].dominio, 256, "%s", dominio);
+        snprintf(reglas[i].patron, 256, "%s", patron);
+        snprintf(reglas[i].tipo, 12, "%s", tipo);
+        reglas[i].ttl = ttl;
+        reglas[i].algoritmo = algoritmo;
+        reglas[i].tamanno_cache = tamanno_cache;
+        reglas[i].requiere_auth = requiere_auth;
+
+        *fin_regla = '}';
+        inicio_regla = fin_regla + 2;
+    }
     free(respuesta_api);
     return 0;
 }
@@ -876,6 +993,7 @@ int main(void) {
     int env_max_tam_entrada = env_entero("MAX_TAM_ENTRADA", 1024);
     int env_puerto_zonal_cache = env_entero("ZONAL_PUERTO_IN", 9777);
     int env_cant_max_dominios = env_entero("CANT_MAX_DOMINIOS", 16);
+    int env_cant_max_reglas = env_entero("CANT_MAX_REGLAS", 16);
     const char *env_dir_cache = env_texto("CACHE_DIR", "cache");
     int env_TLS_habilitado = env_entero("TLS_HABILITADO", 0);
     const char *env_dir_certificado = env_texto("CERTIFICADO_DIR", "./cert.pem");
@@ -883,7 +1001,9 @@ int main(void) {
 
     int cantidad_configs;
     ConfigDominio configs[env_cant_max_dominios];
-    if (cargar_configs(configs, &cantidad_configs, env_cant_max_dominios) == -1) {
+    int cantidad_reglas;
+    ReglaURL reglas[env_cant_max_reglas];
+    if (cargar_configs(configs, &cantidad_configs, env_cant_max_dominios, reglas, &cantidad_reglas, env_cant_max_reglas) == -1) {
         fprintf(stderr, "No se pudo cargar la configuracion desde el API\n");
         return 1;
     }
