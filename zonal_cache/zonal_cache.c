@@ -36,6 +36,7 @@ typedef struct {
     long ttl;
     enum AlgReemplazo algoritmo;
     int requiere_auth;
+    int tls;
     char api_key[128];
 } ConfigDominio;
 
@@ -52,6 +53,12 @@ typedef struct {
     char hash[17];     // el nombre sin el ".meta"
     Meta meta;
 } EntradaCache;
+
+typedef struct {
+    int fd;
+    SSL *ssl;
+} Conexion;
+
 
 int leer_meta(char *dir_punto_meta, Meta *salida) {
     FILE *f = fopen(dir_punto_meta, "r");
@@ -377,11 +384,17 @@ char *consultar_node_api(const char *ruta) {
     const char *env_extra_headers = env_texto("EXTRA_HEADERS", "x-config-key: ABCDEFG\r\n");
     const char *env_node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
     int env_node_api_port = env_entero("NODE_API_PORT", 3000);
+    int env_node_api_tls = env_entero("NODE_API_TLS", 0);
     size_t largo_salida = 0;
 
     char buffer_from_int_to_char[20];
     snprintf(buffer_from_int_to_char, sizeof(buffer_from_int_to_char), "%d", env_node_api_port);
-    return http_get(env_node_api_host, buffer_from_int_to_char, ruta, &largo_salida, 0, env_extra_headers);
+    /* NODE_API_TLS va por variable de entorno y no por la configuracion del
+     * dominio, porque la cache necesita hablarle al API antes de tener ninguna
+     * configuracion cargada. Ponerlo en 1 es lo que permite apuntar al deploy
+     * de Vercel, que solo sirve HTTPS. */
+    
+    return http_get(env_node_api_host, buffer_from_int_to_char, ruta, &largo_salida, 0, env_extra_headers, env_node_api_tls);
 }
 
 int extraer_booleano(char *inicio_config, char *str_buscar) {
@@ -582,7 +595,8 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
         // Consultar informacion al servidor origen
         char buffer_from_int_to_char[20];
         snprintf(buffer_from_int_to_char, sizeof(buffer_from_int_to_char), "%d", config.origen_puerto);
-        char *respuesta_origen = http_get(config.origen_host, buffer_from_int_to_char, ruta, largo_salida, 1, NULL);
+        // TODO: reemplazar el 0 por config.origen_tls cuando se agregue ese campo a Firestore
+        char *respuesta_origen = http_get(config.origen_host, buffer_from_int_to_char, ruta, largo_salida, 1, NULL, 0, config.tls);
         free(metodo);
         free(ruta);
         free(host);
@@ -735,12 +749,21 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
             free(respuesta_api);
             return -1;
         }
+        
         char algoritmo_texto[16];
         if (extraer_texto(inicio_config, "\"algoritmo\":\"", algoritmo_texto, sizeof(algoritmo_texto)) == -1) {
             fprintf(stderr, "config: el dominio '%s' no trae \"algoritmo\" como texto\n", dominio);
             free(respuesta_api);
             return -1;
         }
+        
+        char api_key[128] = {0};
+        if ((extraer_texto(inicio_config, "\"api_key\":\"", api_key, sizeof(api_key)) == -1) && requiere_auth) {
+            fprintf(stderr, "config: al dominio %d de %d le falta el campo \"api_key\": %.200s\n", i + 1, *cantidad_configs, inicio_config);
+            free(respuesta_api);
+            return -1;
+        }
+        
         int int_algoritmo = obtener_algoritmo(algoritmo_texto);
         if (int_algoritmo == -1) {
             fprintf(stderr, "config: el dominio '%s' declara el algoritmo '%s', que no es ninguno de LRU, LFU, FIFO, MRU, RANDOM\n", dominio, algoritmo_texto);
@@ -752,12 +775,7 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
         long tamanno_maximo = extraer_int(inicio_config, "\"tamanno_maximo\":");
         long ttl = extraer_int(inicio_config, "\"ttl\":");
         int requiere_auth = extraer_booleano(inicio_config, "\"requiere_auth\":");
-        char api_key[128] = {0};
-        if ((extraer_texto(inicio_config, "\"api_key\":\"", api_key, sizeof(api_key)) == -1) && requiere_auth) {
-            fprintf(stderr, "config: al dominio %d de %d le falta el campo \"api_key\": %.200s\n", i + 1, *cantidad_configs, inicio_config);
-            free(respuesta_api);
-            return -1;
-        }
+        int tls = extraer_booleano(inicio_config, "\"tls\":");
         
         // Validar que la informacion se recupere bien
         if (origen_puerto == -1 || tamanno_maximo == -1 || ttl == -1 || requiere_auth == -1) {
@@ -779,6 +797,7 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
         configs[i].tamanno_maximo = tamanno_maximo;
         configs[i].ttl = ttl;
         configs[i].requiere_auth = requiere_auth;
+        configs[i].tls = tls;
 
         *fin_config = '}';
         inicio_config = fin_config + 2;
@@ -786,11 +805,6 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
     free(respuesta_api);
     return 0;
 }
-
-typedef struct {
-    int fd;
-    SSL *ssl;
-} Conexion;
 
 ssize_t conexion_leer(Conexion *c, char *ptr_inicio, size_t tam_escribir) {
     if (c->ssl != NULL) {
