@@ -1,0 +1,13 @@
+# Cache zonal de Centroamerica. Cluster en us-central1-a.
+#
+#   helm install cache-cr ./helm/zonal-cache -f helm/zonal-cache/valores-cr.yaml
+#
+# Tras instalar, la IP de este Service se carga en Firestore bajo el pais CR.
+
+imagen:
+  repositorio: us-central1-docker.pkg.dev/PROYECTO/redes/zonal-cache
+  etiqueta: "1.0.0"
+
+servicio:
+  # Reservada con: gcloud compute addresses create cache-cr --region=us-central1
+  ipEstatica: ""

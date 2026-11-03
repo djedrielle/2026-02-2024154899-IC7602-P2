@@ -1,0 +1,9 @@
+apiVersion: v2
+name: apache
+description: Servidor Apache de origen con el sitio HTML de pruebas del Proyecto 2
+type: application
+
+# version    -> la del chart, sube cuando cambian las plantillas
+# appVersion -> la del software empaquetado, sube cuando cambia la imagen
+version: 1.0.0
+appVersion: "2.4"

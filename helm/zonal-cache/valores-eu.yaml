@@ -1,0 +1,13 @@
+# Cache zonal de Europa. Cluster en europe-west1-b.
+#
+#   helm install cache-eu ./helm/zonal-cache -f helm/zonal-cache/valores-eu.yaml
+#
+# Tras instalar, la IP de este Service se carga en Firestore bajo el pais ES.
+
+imagen:
+  repositorio: europe-west1-docker.pkg.dev/PROYECTO/redes/zonal-cache
+  etiqueta: "1.0.0"
+
+servicio:
+  # Reservada con: gcloud compute addresses create cache-eu --region=europe-west1
+  ipEstatica: ""

@@ -1,0 +1,13 @@
+# Cache zonal de Suramerica. Cluster en southamerica-east1-a.
+#
+#   helm install cache-br ./helm/zonal-cache -f helm/zonal-cache/valores-br.yaml
+#
+# Tras instalar, la IP de este Service se carga en Firestore bajo el pais BR.
+
+imagen:
+  repositorio: southamerica-east1-docker.pkg.dev/PROYECTO/redes/zonal-cache
+  etiqueta: "1.0.0"
+
+servicio:
+  # Reservada con: gcloud compute addresses create cache-br --region=southamerica-east1
+  ipEstatica: ""

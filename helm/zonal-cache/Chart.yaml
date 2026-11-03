@@ -1,0 +1,7 @@
+apiVersion: v2
+name: zonal-cache
+description: Cache zonal del Proyecto 2, en GNU C, con terminacion TLS y configuracion por URL
+type: application
+
+version: 1.0.0
+appVersion: "1.0.0"
