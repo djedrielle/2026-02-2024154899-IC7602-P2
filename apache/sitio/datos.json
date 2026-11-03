@@ -1,0 +1,9 @@
+{
+  "sitio": "Noticias del Dia",
+  "proposito": "origen de pruebas para las caches zonales del Proyecto 2",
+  "curso": "IC-7602 Redes",
+  "titulares": [
+    { "id": 1, "titulo": "Las caches zonales acercan el contenido al usuario" },
+    { "id": 2, "titulo": "TLS 1.3 completa el saludo en un solo viaje" }
+  ]
+}
