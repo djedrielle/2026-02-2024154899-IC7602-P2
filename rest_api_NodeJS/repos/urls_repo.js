@@ -128,13 +128,6 @@ export async function borrar_url(email, dominio, id) {
 
 /* ───────────────── vista para el Zonal Cache ───────────────── */
 
-/* Como el endpoint de configuracion es de consumo interno, aqui no se verifica
- * propiedad: ya lo hizo peticion_interna_autorizada con el secreto compartido. */
-async function listar_urls_crudas(dominio) {
-    const respuesta = await coleccion(dominio).get();
-    return respuesta.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-}
-
 /* Devuelve las reglas APLANADAS: una entrada por cada combinacion de regla y
  * tipo de archivo, con el dominio incorporado en cada fila.
  *
@@ -146,10 +139,35 @@ async function listar_urls_crudas(dominio) {
  * Vienen ordenadas de mas a menos especifica dentro de cada dominio: el cache
  * aplica la primera que coincida y no necesita ordenar nada. */
 export async function listar_reglas_planas(dominios) {
+    /* Una sola consulta para las reglas de todos los dominios.
+     *
+     * Antes esto era un await por dominio dentro del ciclo: con cinco dominios
+     * eran cinco viajes a Firestore encadenados, y /api/config pasaba de menos
+     * de un segundo a 4.5. collectionGroup('urls') recorre todas las
+     * subcolecciones con ese nombre de una vez, y no pide indice compuesto
+     * porque no lleva filtros.
+     *
+     * Trae las reglas de dominios que no estan en la lista recibida (los no
+     * verificados, los descartados por mal formados), asi que hay que filtrar
+     * contra el conjunto permitido. */
+    const permitidos = new Set(dominios);
+    const por_dominio = new Map();
+
+    const respuesta = await db.collectionGroup('urls').get();
+    for (const doc of respuesta.docs) {
+        const dominio = doc.ref.parent.parent?.id;
+        if (dominio === undefined || !permitidos.has(dominio)) continue;
+
+        if (!por_dominio.has(dominio)) por_dominio.set(dominio, []);
+        por_dominio.get(dominio).push({ id: doc.id, ...doc.data() });
+    }
+
     const filas = [];
 
+    /* Se recorre "dominios" y no el Map para que el orden de salida siga el del
+     * arreglo de dominios y no el que devuelva Firestore, que no esta definido. */
     for (const dominio of dominios) {
-        const reglas = await listar_urls_crudas(dominio);
+        const reglas = por_dominio.get(dominio) ?? [];
         reglas.sort((a, b) => especificidad(b.patron) - especificidad(a.patron));
 
         for (const regla of reglas) {

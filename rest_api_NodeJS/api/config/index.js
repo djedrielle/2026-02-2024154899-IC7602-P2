@@ -23,6 +23,20 @@ export default async function handler(req, res) {
         const { dominios, descartados } = await listar_config_dominios();
         const reglas = await listar_reglas_planas(dominios.map((d) => d.dominio));
 
+        /* Una regla que pide api_key sobre un dominio sin llaves es una
+         * configuracion imposible de cumplir: el cache respondera 401 a todo el
+         * mundo, correctamente, pero sin que nadie sepa por que.
+         *
+         * No se puede validar en validar_config porque ahi todavia no se
+         * conocen las reglas, y no se descarta el dominio porque sus otras
+         * rutas si funcionan. Queda como aviso en el log del API. */
+        const sin_llaves = new Set(dominios.filter((d) => d.api_keys.length === 0).map((d) => d.dominio));
+        for (const regla of reglas) {
+            if (regla.autenticacion === 'api_key' && sin_llaves.has(regla.dominio)) {
+                console.warn(`dominio ${regla.dominio}: la regla ${regla.patron} exige api_key pero el dominio no tiene ninguna; esas rutas responderan 401`);
+            }
+        }
+
         /* Invariantes que el Zonal Cache asume:
          *   cantidad        === dominios.length
          *   cantidad_reglas === reglas.length

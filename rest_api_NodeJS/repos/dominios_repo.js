@@ -20,6 +20,12 @@ const ALGORITMOS_VALIDOS = ['LRU', 'LFU', 'FIFO', 'MRU', 'RANDOM'];
  * puestas y se olvida de cambiar. */
 const LARGO_MINIMO_API_KEY = 16;
 
+/* Tiene que coincidir con MAX_API_KEYS en zonal_cache/zonal_cache.c: el cache
+ * guarda las llaves en un arreglo de tamanno fijo y descarta las sobrantes.
+ * Se recorta aqui tambien para que el recorte quede registrado de este lado,
+ * donde se puede ver quien quedo afuera. */
+const MAX_API_KEYS_PUBLICADAS = 8;
+
 /* Une el documento con los valores por defecto y valida el algoritmo.
  * Si el algoritmo no es uno de los cinco, se cae a LRU en lugar de dejar
  * que el cache reciba un nombre que no sabe interpretar. */
@@ -42,6 +48,16 @@ function normalizar(dominio, datos) {
      * Si no, al desplegar esto los dominios ya en uso desaparecerian de la
      * configuracion y el cache dejaria de servirlos. */
     config.verificado = datos.verificado === undefined ? true : Boolean(datos.verificado);
+
+    /* El cache lee "api_keys", un arreglo. "api_key" en singular es como se
+     * configuraba antes, escribiendo el campo directo en el documento, y se
+     * conserva como una entrada mas del arreglo para no dejar sin autenticar a
+     * los dominios ya cargados. Se elimina del objeto publicado para que haya
+     * una sola fuente de verdad: dos campos con el mismo proposito fue justo lo
+     * que dejo las llaves del UI desconectadas del cache. */
+    const legado = typeof datos.api_key === 'string' ? datos.api_key.trim() : '';
+    config.api_keys = legado === '' ? [] : [legado];
+    delete config.api_key;
 
     return config;
 }
@@ -69,19 +85,18 @@ export function validar_config(config) {
         problemas.push('origen_puerto debe ser menor o igual a 65535');
     }
 
-    /* Un dominio que exige autenticacion necesita una api_key real.
+    /* Un dominio que exige autenticacion necesita al menos una llave real.
      *
-     * Esto no es cosmetico: el lado C compara con strncmp usando el largo de la
-     * llave guardada, asi que una llave vacia da largo 0, la comparacion devuelve
-     * 0, y CUALQUIER valor de x-api-key autentica. Un documento con
-     * requiere_auth: true y api_key: "" deja el dominio abierto de par en par.
-     *
-     * Se descarta aqui para que el cache nunca reciba esa combinacion. */
+     * El cache ya rechaza por su cuenta cuando no hay llaves (api_key_valida
+     * recorre cero elementos y devuelve 0), asi que esto no es la unica defensa.
+     * Pero descartar el dominio aqui hace visible el error de configuracion en
+     * la respuesta de /api/config, en vez de que el dueno lo descubra porque sus
+     * clientes reciben 401 sin explicacion. */
     if (config.requiere_auth) {
-        if (typeof config.api_key !== 'string' || config.api_key.trim() === '') {
-            problemas.push('api_key debe ser un texto no vacio cuando requiere_auth es true');
-        } else if (config.api_key.length < LARGO_MINIMO_API_KEY) {
-            problemas.push(`api_key debe tener al menos ${LARGO_MINIMO_API_KEY} caracteres`);
+        if (config.api_keys.length === 0) {
+            problemas.push('requiere_auth es true pero el dominio no tiene ninguna api key');
+        } else if (config.api_keys.some((clave) => clave.length < LARGO_MINIMO_API_KEY)) {
+            problemas.push(`toda api key debe tener al menos ${LARGO_MINIMO_API_KEY} caracteres`);
         }
     }
 
@@ -97,14 +112,54 @@ export async function consultar_config_dominio(dominio) {
 /* Devuelve solo los dominios usables, mas la lista de los descartados con su motivo.
  * 'cantidad' en el endpoint se calcula sobre los usables, que es lo que el cache
  * va a recorrer. */
+/* Trae las llaves de TODOS los dominios en una sola consulta.
+ *
+ * collectionGroup('apikeys') recorre todas las subcolecciones con ese nombre
+ * que existan en la base, sin importar de que documento cuelguen. No necesita
+ * indice compuesto porque no lleva filtros ni ordenamiento.
+ *
+ * La alternativa era una consulta por dominio dentro de un ciclo, que es lo que
+ * tenia listar_reglas_planas y hacia que /api/config tardara 4.5 segundos.
+ *
+ * El dominio sale de la ruta del documento: ref.parent es la subcoleccion
+ * "apikeys" y ref.parent.parent es el documento del dominio. */
+async function llaves_por_dominio() {
+    const respuesta = await db.collectionGroup('apikeys').get();
+    const mapa = new Map();
+
+    for (const doc of respuesta.docs) {
+        const dominio = doc.ref.parent.parent?.id;
+        const clave = doc.data().clave;
+        if (dominio === undefined || typeof clave !== 'string' || clave.trim() === '') continue;
+
+        if (!mapa.has(dominio)) mapa.set(dominio, []);
+        mapa.get(dominio).push(clave.trim());
+    }
+
+    return mapa;
+}
+
 export async function listar_config_dominios() {
-    const respuesta = await db.collection('dominios').get();
+    const [respuesta, llaves] = await Promise.all([
+        db.collection('dominios').get(),
+        llaves_por_dominio(),
+    ]);
 
     const dominios = [];
     const descartados = [];
 
     for (const doc of respuesta.docs) {
         const config = normalizar(doc.id, doc.data());
+
+        /* Las llaves de la subcoleccion se suman a la del campo api_key heredado
+         * que normalizar ya dejo en el arreglo. */
+        config.api_keys = [...config.api_keys, ...(llaves.get(doc.id) ?? [])];
+
+        if (config.api_keys.length > MAX_API_KEYS_PUBLICADAS) {
+            console.warn(`dominio ${doc.id}: ${config.api_keys.length} llaves, el cache solo admite ${MAX_API_KEYS_PUBLICADAS}; se publican las primeras y el resto recibira 401`);
+            config.api_keys = config.api_keys.slice(0, MAX_API_KEYS_PUBLICADAS);
+        }
+
         const problemas = validar_config(config);
 
         if (problemas.length === 0) {

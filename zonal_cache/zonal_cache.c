@@ -22,6 +22,8 @@
 #include "../comun/http_cliente.h"
 #include "../comun/variables_entorno.h"
 
+#define MAX_API_KEYS 8
+
 enum AlgReemplazo {
     LRU,
     LFU,
@@ -39,7 +41,8 @@ typedef struct {
     enum AlgReemplazo algoritmo;
     int requiere_auth;
     int tls;
-    char api_key[128];
+    char api_keys[MAX_API_KEYS][128];
+    int cantidad_api_keys;
 } ConfigDominio;
 
 typedef struct {
@@ -457,6 +460,35 @@ int extraer_tipo(char *ruta, char *tipo_ruta) {
     return 0;
 }
 
+/* Decide si la llave que llego en x-api-key es una de las del dominio.
+ *
+ * "recibida" apunta al valor dentro del buffer de la peticion, que sigue con el
+ * fin de linea y los encabezados que vengan despues, asi que primero hay que
+ * medir donde termina: strcspn lo corta en el primer '\r' o '\n'.
+ *
+ * La comparacion exige que los largos sean iguales antes de mirar los bytes, y
+ * eso cierra dos agujeros que tenia la version anterior:
+ *
+ *   - Una llave almacenada vacia daba strlen 0, y strncmp(lo_que_sea, "", 0)
+ *     devuelve 0, es decir "iguales". Cualquier valor autenticaba. Un dominio
+ *     creado desde el UI nace exactamente asi.
+ *   - Se comparaba solo hasta el largo de la almacenada, de modo que un valor
+ *     que apenas empezara igual que la llave buena tambien pasaba.
+ *
+ * Devuelve 0 cuando el dominio no tiene llaves, que es lo correcto: una regla
+ * que exige api_key sobre un dominio sin llaves no debe dejar pasar a nadie. */
+int api_key_valida(const char *recibida, const ConfigDominio *config) {
+    size_t largo_recibido = strcspn(recibida, "\r\n");
+
+    for (int i = 0; i < config->cantidad_api_keys; i++) {
+        const char *almacenada = config->api_keys[i];
+        if (strlen(almacenada) == largo_recibido && !strncmp(recibida, almacenada, largo_recibido)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantidad_configs, ReglaURL *reglas,  int cantidad_reglas, size_t *largo_salida, const char *env_dir_cache) {
     // Extraer el metodo
     // Se coloca en el primer ' ' para obtener el metodo y luego obtener el parametro de la peticion
@@ -579,7 +611,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
     if (regla.requiere_auth) {
         if (api_key != NULL) {
             api_key += 11;
-            if (strncmp(api_key, config.api_key, strlen(config.api_key))) {
+            if (!api_key_valida(api_key, &config)) {
                 free(metodo);
                 free(ruta);
                 free(host);
@@ -612,7 +644,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
             const char *env_node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
             int env_ui_port = env_entero("UI_PORT", 3000);
             char ruta_location[256];
-            snprintf(ruta_location, sizeof(ruta_location), "http://%s:%d/login?redirect=%s%s", env_node_api_host, env_ui_port, host_completo, ruta);
+            snprintf(ruta_location, sizeof(ruta_location), "https://%s:%d/login?redirect=%s%s", env_node_api_host, env_ui_port, host_completo, ruta);
             free(metodo);
             free(ruta);
             free(host);
@@ -663,6 +695,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
             return NULL;
         }
         // Retornar la respuesta al usuario
+        fprintf(stderr, "Recurso retornado desde cache.\n");
         return respuesta;
     
     } else {
@@ -741,6 +774,28 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
         printf("Salida Apache Server: %.*s", (int)*largo_salida, respuesta_origen);
 
         return respuesta_origen;
+    }
+}
+
+int extraer_array_texto(char *inicio_config, char *str_buscar, char destino[][128], int max_elementos, int *cantidad) {
+    *cantidad = 0;
+
+    char *etiqueta = strstr(inicio_config, str_buscar);
+    if (etiqueta == NULL) return 0;
+    etiqueta += strlen(str_buscar);
+
+    while (1) {
+        char *fin_texto = strchr(etiqueta, '"');
+        if (fin_texto == NULL) return 0;
+
+        if (*cantidad == max_elementos) return -1;
+
+        int largo = fin_texto - etiqueta;
+        snprintf(destino[*cantidad], sizeof(destino[0]), "%.*s", largo, etiqueta);
+        (*cantidad)++;
+
+        if (fin_texto[1] != ',') return 0;
+        etiqueta = fin_texto + 3;   // salta la coma y la comilla que abre el siguiente
     }
 }
 
@@ -858,13 +913,13 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
         int requiere_auth = extraer_booleano(inicio_config, "\"requiere_auth\":");
         int tls = extraer_booleano(inicio_config, "\"tls\":");
 
-        char api_key[128] = {0};
-        if ((extraer_texto(inicio_config, "\"api_key\":\"", api_key, sizeof(api_key)) == -1) && requiere_auth) {
-            fprintf(stderr, "config: al dominio %d de %d le falta el campo \"api_key\": %.200s\n", i + 1, *cantidad_configs, inicio_config);
-            free(respuesta_api);
-            return -1;
+        char api_keys[MAX_API_KEYS][128] = {0};
+        int cantidad_api_keys = 0;
+        if (extraer_array_texto(inicio_config, "\"api_keys\":[\"", api_keys, MAX_API_KEYS, &cantidad_api_keys) == -1) {
+            fprintf(stderr, "config: el dominio '%s' declara mas de %d llaves; las sobrantes se ignoran y sus clientes recibiran 401\n",
+                dominio, MAX_API_KEYS);
         }
-        
+
         // Validar que la informacion se recupere bien
         if (origen_puerto == -1 || tamanno_maximo == -1 || ttl == -1 || requiere_auth == -1) {
             fprintf(stderr, "config: al dominio '%s' le falta un campo numerico o booleano ->%s%s%s%s\n",
@@ -879,7 +934,10 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
 
         snprintf(configs[i].dominio, 256, "%s", dominio);
         snprintf(configs[i].origen_host, 256, "%s", origen_host);
-        snprintf(configs[i].api_key, 128, "%s", api_key);
+        for (int n = 0; n < cantidad_api_keys; n++) {
+            snprintf(configs[i].api_keys[n], 128, "%s", api_keys[n]);
+        }
+        configs[i].cantidad_api_keys = cantidad_api_keys;
         configs[i].origen_puerto = origen_puerto;
         configs[i].algoritmo = algoritmo;
         configs[i].tamanno_maximo = tamanno_maximo;
@@ -1086,7 +1144,7 @@ int main(void) {
     signal(SIGPIPE, SIG_IGN);
     srand(time(NULL));
     // Leer variables de entorno
-    int env_max_tam_entrada = env_entero("MAX_TAM_ENTRADA", 1024);
+    int env_max_tam_entrada = env_entero("MAX_TAM_ENTRADA", 32768);
     int env_puerto_zonal_cache = env_entero("ZONAL_PUERTO_IN", 9777);
     int env_cant_max_dominios = env_entero("CANT_MAX_DOMINIOS", 16);
     int env_cant_max_reglas = env_entero("CANT_MAX_REGLAS", 16);
