@@ -417,7 +417,7 @@ char *consultar_node_api(const char *ruta) {
     /* NODE_API_TLS va por variable de entorno y no por la configuracion del
      * dominio, porque la cache necesita hablarle al API antes de tener ninguna
      * configuracion cargada. Ponerlo en 1 es lo que permite apuntar al deploy
-     * de Vercel, que solo sirve HTTPS. */
+     * de Vercel, que solo sirve HTTPS.*/
     
     return http_get(env_node_api_host, buffer_from_int_to_char, ruta, &largo_salida, 0, env_extra_headers, env_node_api_tls);
 }
