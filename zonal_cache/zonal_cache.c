@@ -493,7 +493,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
     }
     printf("Ruta: %s\n", ruta);
     // Extraer el tipo de la ruta (.jpg, .png, ...etc)
-    char *tipo_ruta;
+    char tipo_ruta[12];
     if (extraer_tipo(ruta, tipo_ruta) == -1) {
         fprintf(stderr, "No se encontró '/' en la ruta a la hora de identificar el tipo de recurso\n");
         free(metodo);
@@ -561,7 +561,6 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
         for (int i = 0; i < cantidad_reglas; i++) {
             if ((!strcmp(reglas[i].dominio, host)) && (fnmatch(reglas[i].patron, ruta, 0) == 0)) {
                 snprintf(id_candidato, sizeof(id_candidato), "%s", reglas[i].id);
-                n++;
                 break;
             }
         }
@@ -895,11 +894,25 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
     // Ciclo para extraer las reglas por URL
     *cantidad_reglas = extraer_int(respuesta_api, "\"cantidad_reglas\":");
     if (*cantidad_reglas == 0) {
-        reglas == NULL;
+        reglas = NULL;
         fprintf(stderr, "No existen reglas especificas para ninguna URL.\n");
+        free(respuesta_api);
+        return 0;
+    }
+    if (*cantidad_reglas == -1) {
+        reglas = NULL;
+        fprintf(stderr, "Surgio un error al intentar obtener la cantidad de reglas.\n");
         free(respuesta_api);
         return -1;
     }
+
+    if (*cantidad_reglas > env_cant_max_reglas) {
+        fprintf(stderr, "regla: el API devolvio %d reglas y el maximo compilado es %d (suba CANT_MAX_REGLAS)\n",
+            *cantidad_reglas, env_cant_max_reglas);
+        free(respuesta_api);
+        return -1;
+    }
+
     char *inicio_regla = strstr(respuesta_api, "\"reglas\":[");
     if (inicio_regla == NULL) {
         fprintf(stderr, "regla: la respuesta trae \"cantidad_reglas\" pero no el arreglo \"reglas\". Lo recibido fue: %.200s\n", respuesta_api);
@@ -980,7 +993,7 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
         
         // Validar que la informacion se recupere bien
         if (tamanno_cache == -1 || ttl == -1 || requiere_auth == -1) {
-            fprintf(stderr, "regla: la regla '%s' le falta un campo numerico o booleano ->%s%s%s%s\n",
+            fprintf(stderr, "regla: la regla '%s' le falta un campo numerico o booleano ->%s%s%s\n",
                 id,
                 tamanno_cache  == -1 ? " tamanno_cache"  : "",
                 ttl             == -1 ? " ttl"             : "",
