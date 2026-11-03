@@ -9,7 +9,9 @@
 
 CC      := gcc
 CFLAGS  := -std=gnu11 -Wall -Wextra -g -Icomun
-LDFLAGS :=
+# OpenSSL lo necesitan los dos ejecutables: el Zonal Cache para la terminacion
+# TLS, y ambos a traves de comun/http_cliente.c, que hace peticiones HTTPS.
+LDFLAGS := -lssl -lcrypto
 
 BIN     := bin
 OBJ     := build
@@ -39,6 +41,7 @@ $(BIN)/interceptor: $(INT_OBJ) $(COMUN_OBJ) | $(BIN)
 
 $(BIN)/zonal_cache: $(ZC_OBJ) $(COMUN_OBJ) | $(BIN)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
 
 # Regla generica: cada .c produce su .o dentro de build/, conservando la ruta
 $(OBJ)/%.o: %.c

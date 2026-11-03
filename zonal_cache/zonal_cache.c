@@ -12,6 +12,12 @@
 #include <stdint.h>
 #include <time.h>
 #include <dirent.h>
+#include <limits.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <signal.h>
+#include <fnmatch.h>
+#include <ctype.h>
 
 #include "../comun/http_cliente.h"
 #include "../comun/variables_entorno.h"
@@ -32,11 +38,24 @@ typedef struct {
     long ttl;
     enum AlgReemplazo algoritmo;
     int requiere_auth;
+    int tls;
     char api_key[128];
 } ConfigDominio;
 
 typedef struct {
+    char id[24];
+    char dominio[256];
+    char patron[256];
+    char tipo[12];
+    long ttl;
+    enum AlgReemplazo algoritmo;
+    long tamanno_cache;
+    int requiere_auth;
+} ReglaURL;
+
+typedef struct {
     char clave[256];
+    char id_regla[24];
     long tamanno;
     time_t insercion;
     time_t ultimo_acceso;
@@ -49,6 +68,12 @@ typedef struct {
     Meta meta;
 } EntradaCache;
 
+typedef struct {
+    int fd;
+    SSL *ssl;
+} Conexion;
+
+
 int leer_meta(char *dir_punto_meta, Meta *salida) {
     FILE *f = fopen(dir_punto_meta, "r");
     if (f == NULL) {
@@ -57,19 +82,21 @@ int leer_meta(char *dir_punto_meta, Meta *salida) {
 
     // Leer los datos del archivo y construir un objeto Meta con estos datos
     char clave[256];
+    char id_regla[24];
     long tamanno;
     long insercion;
     long ultimo_acceso;
     long cantidad_accesos;
     long expiracion;
 
-    if (fscanf(f, "%*s %255s %*s %ld %*s %ld %*s %ld %*s %ld %*s %ld", clave, &tamanno, &insercion, &ultimo_acceso, &cantidad_accesos, &expiracion) != 6) {
+    if (fscanf(f, "%*s %255s %*s %23s %*s %ld %*s %ld %*s %ld %*s %ld %*s %ld", clave, id_regla, &tamanno, &insercion, &ultimo_acceso, &cantidad_accesos, &expiracion) != 7) {
         fclose(f);
         fprintf(stderr, "Formato invalido en el .meta %s\n", dir_punto_meta);
         return -1;
     }
 
     snprintf(salida->clave, sizeof(salida->clave), "%s", clave);
+    snprintf(salida->id_regla, sizeof(salida->id_regla), "%s", id_regla);
     salida->tamanno = tamanno;
     salida->insercion = insercion;
     salida->ultimo_acceso = ultimo_acceso;
@@ -124,8 +151,9 @@ int actualizar_meta(char *dir_punto_meta) {
     if (fw == NULL) {
         return -1;
     }
-    fprintf(fw, "clave_original: %s\ntamanno_bytes: %ld\nmomento_insercion: %ld\nultimo_acceso: %ld\ncantidad_accesos: %ld\nmomento_expiracion: %ld", 
+    fprintf(fw, "clave_original: %s\nid_regla: %s\ntamanno_bytes: %ld\nmomento_insercion: %ld\nultimo_acceso: %ld\ncantidad_accesos: %ld\nmomento_expiracion: %ld", 
         m.clave,
+        m.id_regla,
         m.tamanno,
         m.insercion,
         m.ultimo_acceso,
@@ -136,9 +164,10 @@ int actualizar_meta(char *dir_punto_meta) {
     return 0;
 }
 
-int escribir_meta(char *dir_punto_meta, char *clave, long tam_bytes, long TTL) {
+int escribir_meta(char *dir_punto_meta, char *clave, char *id_regla, long tam_bytes, long TTL) {
     Meta m;
     snprintf(m.clave, sizeof(m.clave), "%s", clave);
+    snprintf(m.id_regla, sizeof(m.id_regla), "%s", id_regla);
     m.tamanno = tam_bytes;
     m.insercion = time(NULL);
     m.ultimo_acceso = time(NULL);
@@ -149,8 +178,9 @@ int escribir_meta(char *dir_punto_meta, char *clave, long tam_bytes, long TTL) {
     if (fw == NULL) {
         return -1;
     }
-    fprintf(fw, "clave_original: %s\ntamanno_bytes: %ld\nmomento_insercion: %ld\nultimo_acceso: %ld\ncantidad_accesos: %ld\nmomento_expiracion: %ld", 
+    fprintf(fw, "clave_original: %s\nid_regla: %s\ntamanno_bytes: %ld\nmomento_insercion: %ld\nultimo_acceso: %ld\ncantidad_accesos: %ld\nmomento_expiracion: %ld", 
         m.clave,
+        m.id_regla,
         m.tamanno,
         m.insercion,
         m.ultimo_acceso,
@@ -195,7 +225,7 @@ int buscar_config(char *host, ConfigDominio *configs, int cantidad_configs, Conf
     return -1;
 }
 
-int inventario(EntradaCache **entradas_cache, size_t *tamanno_total, int *cantidad_entradas, char *dir_directorio) {
+int inventario(EntradaCache **entradas_cache, size_t *tamanno_total, size_t *tamanno_total_regla, int *cantidad_entradas, char *dir_directorio, char *id_regla) {
     DIR *dir = opendir(dir_directorio);
     if (dir == NULL) {
         perror("inventario");
@@ -204,6 +234,7 @@ int inventario(EntradaCache **entradas_cache, size_t *tamanno_total, int *cantid
     struct dirent *dp;
     errno = 0;
     int largo;
+    // Contar la cantidad de .meta
     while ((dp = readdir(dir)) != NULL) {
         largo = strlen(dp->d_name);
         if ((largo > 5) && (!strcmp(dp->d_name + largo - 5, ".meta"))) {
@@ -242,15 +273,20 @@ int inventario(EntradaCache **entradas_cache, size_t *tamanno_total, int *cantid
                 return -1;
             }
             *tamanno_total += m.tamanno;
-            char hash[17];
-            snprintf(hash, sizeof(hash), "%.*s", largo - 5, dp->d_name);
-            snprintf(ptr_entradas_cache[i].hash, 17, "%s", hash);
-            ptr_entradas_cache[i].meta = m;
-            i++;
+            if (!strcmp(m.id_regla, id_regla)) {
+                *tamanno_total_regla += m.tamanno;
+                char hash[17];
+                snprintf(hash, sizeof(hash), "%.*s", largo - 5, dp->d_name);
+                snprintf(ptr_entradas_cache[i].hash, 17, "%s", hash);
+                ptr_entradas_cache[i].meta = m;
+                i++;
+            }
+            
         }
     }
     closedir(dir);
     *entradas_cache = ptr_entradas_cache;
+    *cantidad_entradas = i;
     return 0;
 }
 
@@ -373,11 +409,17 @@ char *consultar_node_api(const char *ruta) {
     const char *env_extra_headers = env_texto("EXTRA_HEADERS", "x-config-key: ABCDEFG\r\n");
     const char *env_node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
     int env_node_api_port = env_entero("NODE_API_PORT", 3000);
+    int env_node_api_tls = env_entero("NODE_API_TLS", 0);
     size_t largo_salida = 0;
 
     char buffer_from_int_to_char[20];
     snprintf(buffer_from_int_to_char, sizeof(buffer_from_int_to_char), "%d", env_node_api_port);
-    return http_get(env_node_api_host, buffer_from_int_to_char, ruta, &largo_salida, 0, env_extra_headers);
+    /* NODE_API_TLS va por variable de entorno y no por la configuracion del
+     * dominio, porque la cache necesita hablarle al API antes de tener ninguna
+     * configuracion cargada. Ponerlo en 1 es lo que permite apuntar al deploy
+     * de Vercel, que solo sirve HTTPS. */
+    
+    return http_get(env_node_api_host, buffer_from_int_to_char, ruta, &largo_salida, 0, env_extra_headers, env_node_api_tls);
 }
 
 int extraer_booleano(char *inicio_config, char *str_buscar) {
@@ -391,7 +433,31 @@ int extraer_booleano(char *inicio_config, char *str_buscar) {
     }
 }
 
-char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantidad_configs, size_t *largo_salida) {
+int extraer_tipo(char *ruta, char *tipo_ruta) {
+    char *ultimo_slash = strrchr(ruta, '/');
+    if (ultimo_slash == NULL) {
+        return -1;
+    }
+    char *punto = strrchr(ultimo_slash, '.');
+    if (punto == NULL) {
+        snprintf(tipo_ruta, 12, "%s", "otros");
+        return 0;
+    }
+    char tipo[12];
+    snprintf(tipo, sizeof(tipo), "%s", punto + 1);
+    // Pasar todo a minuscula
+    for (int i = 0; tipo[i]; i++) {
+        tipo[i] = tolower((unsigned char)tipo[i]);
+    }
+    if (strcmp(tipo, "html") && strcmp(tipo, "css") && strcmp(tipo, "js") && strcmp(tipo, "png") && strcmp(tipo, "jpg") && strcmp(tipo, "gif") && strcmp(tipo, "svg") && strcmp(tipo, "json")) {
+        snprintf(tipo_ruta, 12, "%s", "otros");
+        return 0;
+    }
+    snprintf(tipo_ruta, 12, "%s", tipo);
+    return 0;
+}
+
+char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantidad_configs, ReglaURL *reglas,  int cantidad_reglas, size_t *largo_salida, const char *env_dir_cache) {
     // Extraer el metodo
     // Se coloca en el primer ' ' para obtener el metodo y luego obtener el parametro de la peticion
     char *puntero_fin_buscado = strchr(buffer_entrada, ' ');
@@ -426,6 +492,14 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
         session += 9;
     }
     printf("Ruta: %s\n", ruta);
+    // Extraer el tipo de la ruta (.jpg, .png, ...etc)
+    char tipo_ruta[12];
+    if (extraer_tipo(ruta, tipo_ruta) == -1) {
+        fprintf(stderr, "No se encontró '/' en la ruta a la hora de identificar el tipo de recurso\n");
+        free(metodo);
+        free(ruta);
+        return NULL;
+    }
 
     // Extraer el host
     char *puntero_inicio_host = strstr(buffer_entrada, "Host: ");
@@ -451,27 +525,65 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
         i++;
     }
     host[i] = '\0';
-    printf("Host: %s\n", host);
+    
+    char *host_completo = malloc(cant_caracteres + 1);
+    i = 0;
+    while (i < cant_caracteres) {
+        host_completo[i] = puntero_inicio_host[i];
+        i++;
+    }
+    printf("Host: %s, completo: %s\n", host, host_completo);
 
-    // Consultar la configuracion del dominio
+    // Buscar la configuracion de la dominio
+    // Esto nos sirve porque en caso de que no exista configuracion especifica
+    // para la URL solicitada, entonces se aplica la configuracion del dominio
     ConfigDominio config;
     if (buscar_config(host, configs, cantidad_configs, &config) == -1) {
         fprintf(stderr, "No se encontró una configuración para ese host.\n");
         free(metodo);
         free(ruta);
         free(host);
+        free(host_completo);
         return NULL;
+    }
+
+    // Se crea una regla default. Si se encuentra una regla que aplique para el
+    // recurso solicitado entonces se modifica, de lo contrario se trabaja con la
+    // regla default, esta es la especificada por el dominio
+    ReglaURL regla = {0};
+    snprintf(regla.id, sizeof(regla.id), "%s", "__dominio__");
+    regla.ttl = config.ttl;
+    regla.algoritmo = config.algoritmo;
+    regla.tamanno_cache = config.tamanno_maximo;
+    regla.requiere_auth = config.requiere_auth;    
+    if (reglas != NULL) {
+        char id_candidato[24] = {0};
+        for (int i = 0; i < cantidad_reglas; i++) {
+            if ((!strcmp(reglas[i].dominio, host)) && (fnmatch(reglas[i].patron, ruta, 0) == 0)) {
+                snprintf(id_candidato, sizeof(id_candidato), "%s", reglas[i].id);
+                break;
+            }
+        }
+        if (*id_candidato != 0) {
+            for (int i = 0; i < cantidad_reglas; i++) {
+                if ((!strcmp(reglas[i].id, id_candidato)) && (!strcmp(reglas[i].tipo, tipo_ruta))) {
+                    regla = reglas[i];
+                    break;
+                }
+            }
+        }
     }
 
     // Verificar autenticacion
     char *api_key = strcasestr(buffer_entrada, "x-api-key: ");
-    if (config.requiere_auth) {
+    if (regla.requiere_auth) {
         if (api_key != NULL) {
             api_key += 11;
             if (strncmp(api_key, config.api_key, strlen(config.api_key))) {
                 free(metodo);
                 free(ruta);
                 free(host);
+                free(host_completo);
                 return respuesta_401(largo_salida);
             }
         } else if (session != NULL) {
@@ -483,6 +595,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
                 free(metodo);
                 free(ruta);
                 free(host);
+                free(host_completo);
                 return NULL;
             }
             if (extraer_booleano(respuesta_api, "\"valida\":") != 1) {
@@ -490,17 +603,20 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
                 free(metodo);
                 free(ruta);
                 free(host);
+                free(host_completo);
                 return respuesta_401(largo_salida);
             }
             free(respuesta_api);
         } else {
+            // Leer variables de entorno
             const char *env_node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
-            int env_ui_port = env_entero("UI_PORT", 5173);
+            int env_ui_port = env_entero("UI_PORT", 3000);
             char ruta_location[256];
-            snprintf(ruta_location, sizeof(ruta_location), "http://%s:%d/login?redirect=%s%s", env_node_api_host, env_ui_port, host, ruta);
+            snprintf(ruta_location, sizeof(ruta_location), "http://%s:%d/login?redirect=%s%s", env_node_api_host, env_ui_port, host_completo, ruta);
             free(metodo);
             free(ruta);
             free(host);
+            free(host_completo);
             return respuesta_302(ruta_location, largo_salida);
         }
     }
@@ -515,8 +631,8 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
     // Verificar si se tiene informacion en cache del host correspondiente
     struct stat st = {0};
     
-    char dir_directorio[6 + strlen(host) + 1]; // "cache/" -> 6 caracteres
-    snprintf(dir_directorio, sizeof(dir_directorio), "%s%s", "cache/", host);
+    char dir_directorio[strlen(env_dir_cache) + strlen(host) + 2]; // +2 por el '/' y el '\0'
+    snprintf(dir_directorio, sizeof(dir_directorio), "%s/%s", env_dir_cache, host);
 
     // Formar la direccion de los .meta y .dat
     char dir_punto_meta[sizeof(dir_directorio) + 1 + sizeof(hash_clave) + 5]; // +1 por el '/' entre el directorio y el hash. +5 por el ".meta"
@@ -531,6 +647,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
         free(metodo);
         free(ruta);
         free(host);
+        free(host_completo);
 
         // Actualizar metadatos
         if (actualizar_meta(dir_punto_meta) == -1) {
@@ -556,6 +673,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
                 free(metodo);
                 free(ruta);
                 free(host);
+                free(host_completo);
                 return NULL;
             }
         }
@@ -563,10 +681,11 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
         // Consultar informacion al servidor origen
         char buffer_from_int_to_char[20];
         snprintf(buffer_from_int_to_char, sizeof(buffer_from_int_to_char), "%d", config.origen_puerto);
-        char *respuesta_origen = http_get(config.origen_host, buffer_from_int_to_char, ruta, largo_salida, 1, NULL);
+        char *respuesta_origen = http_get(config.origen_host, buffer_from_int_to_char, ruta, largo_salida, 1, NULL, config.tls);
         free(metodo);
         free(ruta);
         free(host);
+        free(host_completo);
         if (respuesta_origen == NULL) {
             fprintf(stderr, "No se puede recuperar información del origen");
             return NULL;
@@ -580,13 +699,14 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
 
         // Obtener el tamanno total del directorio cache del dominio y una lista de las entradas presentes en cache
         size_t tamanno_total = 0;
+        size_t tamanno_total_regla = 0;
         EntradaCache *entradas_cache;
         int cantidad_entradas = 0;
-        if (inventario(&entradas_cache, &tamanno_total, &cantidad_entradas, dir_directorio) == -1) {
+        if (inventario(&entradas_cache, &tamanno_total, &tamanno_total_regla, &cantidad_entradas, dir_directorio, regla.id) == -1) {
             return NULL;
         }
-        while (tamanno_total + *largo_salida > config.tamanno_maximo) {
-            int indice_victima = elegir_victima(entradas_cache, config.algoritmo, cantidad_entradas);
+        while (tamanno_total_regla + *largo_salida > regla.tamanno_cache) {
+            int indice_victima = elegir_victima(entradas_cache, regla.algoritmo, cantidad_entradas);
             // Eliminar recurso
             char ruta_meta[sizeof(dir_directorio) + 1 + 16 + 5];
             char ruta_dat[sizeof(dir_directorio) + 1 + 16 + 4];
@@ -612,7 +732,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
             return NULL;
         }
 
-        if ((escribir_meta(dir_punto_meta, clave, tam_bytes, config.ttl)) == -1) {
+        if ((escribir_meta(dir_punto_meta, clave, regla.id, tam_bytes, regla.ttl)) == -1) {
             printf("Error al intentar escribir el .meta");
             free(respuesta_origen);
             return NULL;
@@ -654,7 +774,7 @@ int obtener_algoritmo(char *algoritmo_texto) {
     return -1;
 }
 
-int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_max_dominios) {
+int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_max_dominios, ReglaURL *reglas, int *cantidad_reglas, int env_cant_max_reglas) {
     char *respuesta_api = consultar_node_api("/api/config");
     if (respuesta_api == NULL) {
         fprintf(stderr, "config: no se pudo contactar el API (revise NODE_API_HOST y NODE_API_PORT, y que el API este arriba)\n");
@@ -688,6 +808,8 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
         free(respuesta_api);
         return -1;
     }
+    
+    // Ciclo para parsear los dominios
     inicio_config += 12;
     char *fin_config;
     for (int i = 0; i < *cantidad_configs; i++) {
@@ -715,12 +837,14 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
             free(respuesta_api);
             return -1;
         }
+        
         char algoritmo_texto[16];
         if (extraer_texto(inicio_config, "\"algoritmo\":\"", algoritmo_texto, sizeof(algoritmo_texto)) == -1) {
             fprintf(stderr, "config: el dominio '%s' no trae \"algoritmo\" como texto\n", dominio);
             free(respuesta_api);
             return -1;
         }
+        
         int int_algoritmo = obtener_algoritmo(algoritmo_texto);
         if (int_algoritmo == -1) {
             fprintf(stderr, "config: el dominio '%s' declara el algoritmo '%s', que no es ninguno de LRU, LFU, FIFO, MRU, RANDOM\n", dominio, algoritmo_texto);
@@ -732,6 +856,8 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
         long tamanno_maximo = extraer_int(inicio_config, "\"tamanno_maximo\":");
         long ttl = extraer_int(inicio_config, "\"ttl\":");
         int requiere_auth = extraer_booleano(inicio_config, "\"requiere_auth\":");
+        int tls = extraer_booleano(inicio_config, "\"tls\":");
+
         char api_key[128] = {0};
         if ((extraer_texto(inicio_config, "\"api_key\":\"", api_key, sizeof(api_key)) == -1) && requiere_auth) {
             fprintf(stderr, "config: al dominio %d de %d le falta el campo \"api_key\": %.200s\n", i + 1, *cantidad_configs, inicio_config);
@@ -759,26 +885,221 @@ int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_m
         configs[i].tamanno_maximo = tamanno_maximo;
         configs[i].ttl = ttl;
         configs[i].requiere_auth = requiere_auth;
+        configs[i].tls = tls;
 
         *fin_config = '}';
         inicio_config = fin_config + 2;
+    }
+
+    // Ciclo para extraer las reglas por URL
+    *cantidad_reglas = extraer_int(respuesta_api, "\"cantidad_reglas\":");
+    if (*cantidad_reglas == 0) {
+        reglas = NULL;
+        fprintf(stderr, "No existen reglas especificas para ninguna URL.\n");
+        free(respuesta_api);
+        return 0;
+    }
+    if (*cantidad_reglas == -1) {
+        reglas = NULL;
+        fprintf(stderr, "Surgio un error al intentar obtener la cantidad de reglas.\n");
+        free(respuesta_api);
+        return -1;
+    }
+
+    if (*cantidad_reglas > env_cant_max_reglas) {
+        fprintf(stderr, "regla: el API devolvio %d reglas y el maximo compilado es %d (suba CANT_MAX_REGLAS)\n",
+            *cantidad_reglas, env_cant_max_reglas);
+        free(respuesta_api);
+        return -1;
+    }
+
+    char *inicio_regla = strstr(respuesta_api, "\"reglas\":[");
+    if (inicio_regla == NULL) {
+        fprintf(stderr, "regla: la respuesta trae \"cantidad_reglas\" pero no el arreglo \"reglas\". Lo recibido fue: %.200s\n", respuesta_api);
+        free(respuesta_api);
+        return -1;
+    }
+
+    inicio_regla += 10;
+    char *fin_regla;
+    for (int i = 0; i < *cantidad_reglas; i++) {
+        fin_regla = strchr(inicio_regla + 1, '}');
+        if (fin_regla == NULL) {
+            fprintf(stderr, "regla: el JSON se corta en la regla %d de %d; no se encontro el cierre del objeto\n",
+                i + 1, *cantidad_reglas);
+            free(respuesta_api);
+            return -1;
+        }
+        *fin_regla = '\0';
+
+        char id[24];
+        if (extraer_texto(inicio_regla, "\"id\":\"", id, sizeof(id)) == -1) {
+            fprintf(stderr, "regla: a la regla %d de %d le falta el campo \"id\": %.200s\n",
+                i + 1, *cantidad_reglas, inicio_regla);
+            free(respuesta_api);
+            return -1;
+        }
+        char dominio[256];
+        if (extraer_texto(inicio_regla, "\"dominio\":\"", dominio, sizeof(dominio)) == -1) {
+            fprintf(stderr, "regla: a la regla %d de %d le falta el campo \"dominio\": %.200s\n",
+                i + 1, *cantidad_reglas, inicio_regla);
+            free(respuesta_api);
+            return -1;
+        }
+        char patron[256];
+        if (extraer_texto(inicio_regla, "\"patron\":\"", patron, sizeof(patron)) == -1) {
+            fprintf(stderr, "regla: a la regla %d de %d le falta el campo \"patron\": %.200s\n",
+                i + 1, *cantidad_reglas, inicio_regla);
+            free(respuesta_api);
+            return -1;
+        }
+        char tipo[12];
+        if (extraer_texto(inicio_regla, "\"tipo\":\"", tipo, sizeof(tipo)) == -1) {
+            fprintf(stderr, "regla: a la regla %d de %d le falta el campo \"tipo\": %.200s\n",
+                i + 1, *cantidad_reglas, inicio_regla);
+            free(respuesta_api);
+            return -1;
+        }
+        
+        char algoritmo_texto[16];
+        if (extraer_texto(inicio_regla, "\"algoritmo\":\"", algoritmo_texto, sizeof(algoritmo_texto)) == -1) {
+            fprintf(stderr, "regla: la regla '%s' no trae \"algoritmo\" como texto\n", id);
+            free(respuesta_api);
+            return -1;
+        }
+        
+        int int_algoritmo = obtener_algoritmo(algoritmo_texto);
+        if (int_algoritmo == -1) {
+            fprintf(stderr, "regla: la regla '%s' declara el algoritmo '%s', que no es ninguno de LRU, LFU, FIFO, MRU, RANDOM\n", id, algoritmo_texto);
+            free(respuesta_api);
+            return -1;
+        }
+
+        long ttl = extraer_int(inicio_regla, "\"ttl\":");
+        enum AlgReemplazo algoritmo = int_algoritmo;
+        long tamanno_cache = extraer_int(inicio_regla, "\"tamanno_cache\":");
+
+        char autenticacion[24];
+        if (extraer_texto(inicio_regla, "\"autenticacion\":\"", autenticacion, sizeof(autenticacion)) == -1) {
+            fprintf(stderr, "regla: la regla '%s' no trae metodo de \"autenticacion\" valido\n", id);
+            free(respuesta_api);
+            return -1;
+        }
+        
+        int requiere_auth = 0;
+        if (strcmp(autenticacion, "ninguna")) {
+            requiere_auth = 1;
+        }
+        
+        // Validar que la informacion se recupere bien
+        if (tamanno_cache == -1 || ttl == -1 || requiere_auth == -1) {
+            fprintf(stderr, "regla: la regla '%s' le falta un campo numerico o booleano ->%s%s%s\n",
+                id,
+                tamanno_cache  == -1 ? " tamanno_cache"  : "",
+                ttl             == -1 ? " ttl"             : "",
+                requiere_auth   == -1 ? " requiere_auth"   : "");
+            free(respuesta_api);
+            return -1;
+        }
+
+        snprintf(reglas[i].id, 24, "%s", id);
+        snprintf(reglas[i].dominio, 256, "%s", dominio);
+        snprintf(reglas[i].patron, 256, "%s", patron);
+        snprintf(reglas[i].tipo, 12, "%s", tipo);
+        reglas[i].ttl = ttl;
+        reglas[i].algoritmo = algoritmo;
+        reglas[i].tamanno_cache = tamanno_cache;
+        reglas[i].requiere_auth = requiere_auth;
+
+        *fin_regla = '}';
+        inicio_regla = fin_regla + 2;
     }
     free(respuesta_api);
     return 0;
 }
 
+ssize_t conexion_leer(Conexion *c, char *ptr_inicio, size_t tam_escribir) {
+    if (c->ssl != NULL) {
+        return SSL_read(c->ssl, ptr_inicio, tam_escribir);
+    } else {
+        return read(c->fd, ptr_inicio, tam_escribir);
+    }
+}
+
+/* Escribe los 'largo' bytes completos en la conexion.
+ *
+ * Tanto send() como SSL_write() pueden transmitir MENOS de lo pedido: cuando el
+ * buffer de salida del socket se llena, devuelven lo que alcanzaron a copiar.
+ * Sin este ciclo una respuesta grande llega truncada, y como el cliente leyo un
+ * Content-Length mayor, se queda esperando bytes que nunca van a salir.
+ *
+ * Devuelve los bytes escritos, o -1 si la conexion fallo. */
+ssize_t conexion_escribir(Conexion *c, const char *datos, size_t largo) {
+    size_t enviados = 0;
+
+    while (enviados < largo) {
+        size_t resto = largo - enviados;
+        ssize_t n;
+
+        if (c->ssl != NULL) {
+            /* SSL_write recibe la longitud como int, asi que se parte el envio
+             * si alguna vez superara ese limite. */
+            int pedir = resto > INT_MAX ? INT_MAX : (int)resto;
+            n = SSL_write(c->ssl, datos + enviados, pedir);
+
+            if (n <= 0) {
+                int motivo = SSL_get_error(c->ssl, (int)n);
+                /* Sobre un socket bloqueante estos dos solo aparecen durante una
+                 * renegociacion: la operacion no fallo, hay que repetirla. */
+                if (motivo == SSL_ERROR_WANT_WRITE || motivo == SSL_ERROR_WANT_READ) continue;
+                fprintf(stderr, "Error al escribir sobre TLS tras %zu de %zu bytes\n", enviados, largo);
+                ERR_print_errors_fp(stderr);
+                return -1;
+            }
+        } else {
+            n = send(c->fd, datos + enviados, resto, 0);
+
+            if (n < 0) {
+                if (errno == EINTR) continue; // una senal interrumpio el envio
+                fprintf(stderr, "Error al escribir tras %zu de %zu bytes: %s\n",
+                    enviados, largo, strerror(errno));
+                return -1;
+            }
+            if (n == 0) break; // el otro extremo ya no recibe
+        }
+
+        enviados += (size_t)n;
+    }
+
+    return (ssize_t)enviados;
+}
+
+void conexion_cerrar(Conexion *c) {
+    if (c->ssl != NULL) {
+        SSL_shutdown(c->ssl);
+        SSL_free(c->ssl);
+    }
+    close(c->fd);
+}
 
 int main(void) {
+    signal(SIGPIPE, SIG_IGN);
     srand(time(NULL));
     // Leer variables de entorno
     int env_max_tam_entrada = env_entero("MAX_TAM_ENTRADA", 1024);
     int env_puerto_zonal_cache = env_entero("ZONAL_PUERTO_IN", 9777);
     int env_cant_max_dominios = env_entero("CANT_MAX_DOMINIOS", 16);
-    
+    int env_cant_max_reglas = env_entero("CANT_MAX_REGLAS", 16);
+    const char *env_dir_cache = env_texto("CACHE_DIR", "cache");
+    int env_TLS_habilitado = env_entero("TLS_HABILITADO", 0);
+    const char *env_dir_certificado = env_texto("CERTIFICADO_DIR", "./cert.pem");
+    const char *env_dir_private_key = env_texto("PRIVATE_KEY_DIR", "./clave.pem");
 
     int cantidad_configs;
     ConfigDominio configs[env_cant_max_dominios];
-    if (cargar_configs(configs, &cantidad_configs, env_cant_max_dominios) == -1) {
+    int cantidad_reglas;
+    ReglaURL reglas[env_cant_max_reglas];
+    if (cargar_configs(configs, &cantidad_configs, env_cant_max_dominios, reglas, &cantidad_reglas, env_cant_max_reglas) == -1) {
         fprintf(stderr, "No se pudo cargar la configuracion desde el API\n");
         return 1;
     }
@@ -808,6 +1129,53 @@ int main(void) {
         return 1;
     }
 
+    // Crear el directorio cache
+    if (mkdir(env_dir_cache, 0777) != 0 && errno != EEXIST) {
+        perror("mkdir");
+        close(server_socket);
+        return 1;
+    }
+
+    // Crear el contexto SSL (en caso de que sea necesario)
+    SSL_CTX *ctx = NULL;
+    if (env_TLS_habilitado) {
+        ctx = SSL_CTX_new(TLS_server_method());
+        if (ctx == NULL) {
+            fprintf(stderr, "Error al crear el contexto SSL.\n");
+            ERR_print_errors_fp(stderr);
+            close(server_socket);
+            return 1;
+        }
+        if (!SSL_CTX_use_certificate_file(ctx, env_dir_certificado, SSL_FILETYPE_PEM)) {
+            fprintf(stderr, "Error al cargar el certificado.\n");
+            ERR_print_errors_fp(stderr);
+            SSL_CTX_free(ctx);
+            close(server_socket);
+            return 1;
+        }
+        if (!SSL_CTX_use_PrivateKey_file(ctx, env_dir_private_key, SSL_FILETYPE_PEM)) {
+            fprintf(stderr, "Error al cargar la llave privada.\n");
+            ERR_print_errors_fp(stderr);
+            SSL_CTX_free(ctx);
+            close(server_socket);
+            return 1;
+        }
+        if (!SSL_CTX_check_private_key(ctx)) {
+            fprintf(stderr, "La llave privada no corresponde al certificado.\n");
+            ERR_print_errors_fp(stderr);
+            SSL_CTX_free(ctx);
+            close(server_socket);
+            return 1;
+        }
+        if (SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION) != 1) {
+            fprintf(stderr, "Error al establecer la versión mínima de TLS.\n");
+            ERR_print_errors_fp(stderr);
+            SSL_CTX_free(ctx);
+            close(server_socket);
+            return 1;
+        }
+    }
+
     if (listen(server_socket, 10) < 0) {
         perror("listen");
         close(server_socket);
@@ -825,15 +1193,46 @@ int main(void) {
             continue;
         }
         printf("Cliente conectado, IP: %s, puerto: %i\n", inet_ntoa(client_address.sin_addr), ntohs(client_address.sin_port));
-
+        
+        Conexion conexion = {client_socket, NULL};
+        // Handshake
+        if (ctx != NULL) {
+            SSL *ssl = SSL_new(ctx);
+            if (ssl == NULL) {
+                fprintf(stderr, "Error al crear el puntero SSL.\n");
+                ERR_print_errors_fp(stderr);
+                close(client_socket);
+                continue;
+            }
+            if (!SSL_set_fd(ssl, conexion.fd)) {
+                fprintf(stderr, "Error al conectar el puntero al descriptor de archivo.\n");
+                ERR_print_errors_fp(stderr);
+                SSL_free(ssl);
+                close(client_socket);
+                continue;
+            }
+            if (SSL_accept(ssl) <= 0) {
+                fprintf(stderr, "Error al ejecutar el handshake.\n");
+                ERR_print_errors_fp(stderr);
+                SSL_free(ssl);
+                close(client_socket);
+                continue;
+            }
+            conexion.ssl = ssl;
+        }
+        
         // Ensamblar la peticion: TCP es un flujo, read() puede entregarla en varios pedazos.
         // Se acumula hasta encontrar el "\r\n\r\n" que cierra los encabezados.
         size_t total = 0;
         char *fin_encabezados = NULL;
         while (total < sizeof(entrada) - 1) {
-            ssize_t bytes_leidos = read(client_socket, entrada + total, sizeof(entrada) - 1 - total);
-            if (bytes_leidos < 0) {
+            ssize_t bytes_leidos = conexion_leer(&conexion, entrada + total, sizeof(entrada) - 1 - total);
+            if (bytes_leidos < 0 && conexion.ssl == NULL) {
                 perror("read");
+                break;
+            } else if (bytes_leidos < 0 && conexion.ssl != NULL) {
+                fprintf(stderr, "Error al leer la entrada del cliente sobre TLS.\n");
+                ERR_print_errors_fp(stderr);
                 break;
             }
             if (bytes_leidos == 0) break; // El cliente cerro la conexion
@@ -845,23 +1244,25 @@ int main(void) {
 
         if (fin_encabezados == NULL) {
             fprintf(stderr, "Peticion incompleta o mas grande que el buffer (%zu bytes), se descarta\n", total);
-            close(client_socket);
+            conexion_cerrar(&conexion);
             continue;
         }
 
         printf("Entrada: %s", entrada);
         size_t largo_salida = 0;
-        char *respuesta = procesar_entrada(entrada, configs, cantidad_configs, &largo_salida);
+        char *respuesta = procesar_entrada(entrada, configs, cantidad_configs, reglas, cantidad_reglas, &largo_salida, env_dir_cache);
         if (respuesta != NULL) {
-            send(client_socket, respuesta, largo_salida, MSG_NOSIGNAL);
+            ssize_t escritos = conexion_escribir(&conexion, respuesta, largo_salida);
+            if (escritos < 0 || (size_t)escritos != largo_salida) {
+                fprintf(stderr, "La respuesta se entrego incompleta: %zd de %zu bytes\n",
+                    escritos, largo_salida);
+            }
             free(respuesta);
         }
-
         // Una peticion por conexion: se responde y se cierra
-        close(client_socket);
+        conexion_cerrar(&conexion);
     }
-
+    SSL_CTX_free(ctx);
     close(server_socket);
-
     return 0;
 }
