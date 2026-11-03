@@ -10,3 +10,6 @@
 /build
 */cache/
 */*.pem
+
+# configuracion de npm propia de cada maquina (trae rutas absolutas del HOME)
+.npmrc
