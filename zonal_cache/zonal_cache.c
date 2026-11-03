@@ -279,12 +279,14 @@ int inventario(EntradaCache **entradas_cache, size_t *tamanno_total, size_t *tam
                 snprintf(hash, sizeof(hash), "%.*s", largo - 5, dp->d_name);
                 snprintf(ptr_entradas_cache[i].hash, 17, "%s", hash);
                 ptr_entradas_cache[i].meta = m;
+                i++;
             }
-            i++;
+            
         }
     }
     closedir(dir);
     *entradas_cache = ptr_entradas_cache;
+    *cantidad_entradas = i;
     return 0;
 }
 
@@ -431,24 +433,28 @@ int extraer_booleano(char *inicio_config, char *str_buscar) {
     }
 }
 
-char *extraer_tipo(ruta) {
-    int fin_ruta = strlen(ruta);
+int extraer_tipo(char *ruta, char *tipo_ruta) {
     char *ultimo_slash = strrchr(ruta, '/');
     if (ultimo_slash == NULL) {
-        return NULL;
+        return -1;
     }
     char *punto = strrchr(ultimo_slash, '.');
-    if (punto == NULL) return "otros";
+    if (punto == NULL) {
+        snprintf(tipo_ruta, 12, "%s", "otros");
+        return 0;
+    }
     char tipo[12];
     snprintf(tipo, sizeof(tipo), "%s", punto + 1);
     // Pasar todo a minuscula
     for (int i = 0; tipo[i]; i++) {
         tipo[i] = tolower((unsigned char)tipo[i]);
     }
-    if (strcmp(tipo, "html") || strcmp(tipo, "css") || strcmp(tipo, "js") || strcmp(tipo, "png") || strcmp(tipo, "jpg") || strcmp(tipo, "gif") || strcmp(tipo, "svg") || strcmp(tipo, "json")) {
-        return "otros";
+    if (strcmp(tipo, "html") && strcmp(tipo, "css") && strcmp(tipo, "js") && strcmp(tipo, "png") && strcmp(tipo, "jpg") && strcmp(tipo, "gif") && strcmp(tipo, "svg") && strcmp(tipo, "json")) {
+        snprintf(tipo_ruta, 12, "%s", "otros");
+        return 0;
     }
-    return tipo;
+    snprintf(tipo_ruta, 12, "%s", tipo);
+    return 0;
 }
 
 char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantidad_configs, ReglaURL *reglas,  int cantidad_reglas, size_t *largo_salida, const char *env_dir_cache) {
@@ -487,8 +493,8 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
     }
     printf("Ruta: %s\n", ruta);
     // Extraer el tipo de la ruta (.jpg, .png, ...etc)
-    char *tipo_ruta = extraer_tipo(ruta);
-    if (tipo_ruta == NULL) {
+    char *tipo_ruta;
+    if (extraer_tipo(ruta, tipo_ruta) == -1) {
         fprintf(stderr, "No se encontró '/' en la ruta a la hora de identificar el tipo de recurso\n");
         free(metodo);
         free(ruta);
@@ -541,57 +547,33 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
         return NULL;
     }
 
-    // Buscar la configuracion de esta URL
-    ReglaURL regla;
+    // Se crea una regla default. Si se encuentra una regla que aplique para el
+    // recurso solicitado entonces se modifica, de lo contrario se trabaja con la
+    // regla default, esta es la especificada por el dominio
+    ReglaURL regla = {0};
+    snprintf(regla.id, sizeof(regla.id), "%s", "__dominio__");
+    regla.ttl = config.ttl;
+    regla.algoritmo = config.algoritmo;
+    regla.tamanno_cache = config.tamanno_maximo;
+    regla.requiere_auth = config.requiere_auth;    
     if (reglas != NULL) {
         char id_candidato[24] = {0};
-        int n = 0;
-        for (int i = 0, i < cantidad_reglas; i++) {
-            if ((reglas[i].dominio == host) && (fnmatch(reglas[i].patron, ruta) == 0)) {
-                snprintf(id_candidato, sizeof(id_candidato, "%s", reglas[i].id));
+        for (int i = 0; i < cantidad_reglas; i++) {
+            if ((!strcmp(reglas[i].dominio, host)) && (fnmatch(reglas[i].patron, ruta, 0) == 0)) {
+                snprintf(id_candidato, sizeof(id_candidato), "%s", reglas[i].id);
                 n++;
                 break;
             }
         }
-        if (n == 1) {
-            for (int i = 0, i < cantidad_reglas; i++) {
+        if (*id_candidato != 0) {
+            for (int i = 0; i < cantidad_reglas; i++) {
                 if ((!strcmp(reglas[i].id, id_candidato)) && (!strcmp(reglas[i].tipo, tipo_ruta))) {
-                    regla = regla[i];
-                    n++;
+                    regla = reglas[i];
                     break;
                 }
             }
-        } 
-        if (n != 2) {
-            ReglaURL regla_sintetica;
-            regla_sintetica.id = "__dominio__";
-            regla_sintetica.ttl = config.ttl;
-            regla_sintetica.algoritmo = config.algoritmo;
-            regla_sintetica.tamanno_cache = config.tamanno_maximo;
-            regla_sintetica.requiere_auth = config.requiere_auth;
-            regla = regla_sintetica;
         }
-    } else {
-        ReglaURL regla_sintetica;
-        regla_sintetica.id = "__dominio__";
-        regla_sintetica.ttl = config.ttl;
-        regla_sintetica.algoritmo = config.algoritmo;
-        regla_sintetica.tamanno_cache = config.tamanno_maximo;
-        regla_sintetica.requiere_auth = config.requiere_auth;
-        regla = regla_sintetica;
     }
-
-    /*
-        Primero que todo hay que verificar reglas != NULL
-
-        Recorrer reglas buscando la primera entrada donde coincida reglas[i].dominio == host && fnmatch(reglas[i].patron, ruta, 0) == 0
-        Si se encuentra entonces se almacena reglas[i].id
-
-        Luego se vuelve a recorrer reglas buscando la regla con el id almacenado para ver si su "tipo" calza con el de ruta.
-        Si es asi entonces se almacena esta regla en una variable ReglaURL. Si no, entonces se utiliza la configuracion del dominio.
-
-        Para usar la configuracion del dominio se debe crear una variable ReglaURL en la que se almacenaran los valores de la variable ConfigDominio config
-    */
 
     // Verificar autenticacion
     char *api_key = strcasestr(buffer_entrada, "x-api-key: ");
