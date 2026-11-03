@@ -16,6 +16,8 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <signal.h>
+#include <fnmatch.h>
+#include <ctype.h>
 
 #include "../comun/http_cliente.h"
 #include "../comun/variables_entorno.h"
@@ -41,7 +43,19 @@ typedef struct {
 } ConfigDominio;
 
 typedef struct {
+    char id[24];
+    char dominio[256];
+    char patron[256];
+    char tipo[12];
+    long ttl;
+    enum AlgReemplazo algoritmo;
+    long tamanno_cache;
+    int requiere_auth;
+} ReglaURL;
+
+typedef struct {
     char clave[256];
+    char id_regla[24];
     long tamanno;
     time_t insercion;
     time_t ultimo_acceso;
@@ -68,19 +82,21 @@ int leer_meta(char *dir_punto_meta, Meta *salida) {
 
     // Leer los datos del archivo y construir un objeto Meta con estos datos
     char clave[256];
+    char id_regla[24];
     long tamanno;
     long insercion;
     long ultimo_acceso;
     long cantidad_accesos;
     long expiracion;
 
-    if (fscanf(f, "%*s %255s %*s %ld %*s %ld %*s %ld %*s %ld %*s %ld", clave, &tamanno, &insercion, &ultimo_acceso, &cantidad_accesos, &expiracion) != 6) {
+    if (fscanf(f, "%*s %255s %*s %23s %*s %ld %*s %ld %*s %ld %*s %ld %*s %ld", clave, id_regla, &tamanno, &insercion, &ultimo_acceso, &cantidad_accesos, &expiracion) != 7) {
         fclose(f);
         fprintf(stderr, "Formato invalido en el .meta %s\n", dir_punto_meta);
         return -1;
     }
 
     snprintf(salida->clave, sizeof(salida->clave), "%s", clave);
+    snprintf(salida->id_regla, sizeof(salida->id_regla), "%s", id_regla);
     salida->tamanno = tamanno;
     salida->insercion = insercion;
     salida->ultimo_acceso = ultimo_acceso;
@@ -135,8 +151,9 @@ int actualizar_meta(char *dir_punto_meta) {
     if (fw == NULL) {
         return -1;
     }
-    fprintf(fw, "clave_original: %s\ntamanno_bytes: %ld\nmomento_insercion: %ld\nultimo_acceso: %ld\ncantidad_accesos: %ld\nmomento_expiracion: %ld", 
+    fprintf(fw, "clave_original: %s\nid_regla: %s\ntamanno_bytes: %ld\nmomento_insercion: %ld\nultimo_acceso: %ld\ncantidad_accesos: %ld\nmomento_expiracion: %ld", 
         m.clave,
+        m.id_regla,
         m.tamanno,
         m.insercion,
         m.ultimo_acceso,
@@ -147,9 +164,10 @@ int actualizar_meta(char *dir_punto_meta) {
     return 0;
 }
 
-int escribir_meta(char *dir_punto_meta, char *clave, long tam_bytes, long TTL) {
+int escribir_meta(char *dir_punto_meta, char *clave, char *id_regla, long tam_bytes, long TTL) {
     Meta m;
     snprintf(m.clave, sizeof(m.clave), "%s", clave);
+    snprintf(m.id_regla, sizeof(m.id_regla), "%s", id_regla);
     m.tamanno = tam_bytes;
     m.insercion = time(NULL);
     m.ultimo_acceso = time(NULL);
@@ -160,8 +178,9 @@ int escribir_meta(char *dir_punto_meta, char *clave, long tam_bytes, long TTL) {
     if (fw == NULL) {
         return -1;
     }
-    fprintf(fw, "clave_original: %s\ntamanno_bytes: %ld\nmomento_insercion: %ld\nultimo_acceso: %ld\ncantidad_accesos: %ld\nmomento_expiracion: %ld", 
+    fprintf(fw, "clave_original: %s\nid_regla: %s\ntamanno_bytes: %ld\nmomento_insercion: %ld\nultimo_acceso: %ld\ncantidad_accesos: %ld\nmomento_expiracion: %ld", 
         m.clave,
+        m.id_regla,
         m.tamanno,
         m.insercion,
         m.ultimo_acceso,
@@ -206,7 +225,7 @@ int buscar_config(char *host, ConfigDominio *configs, int cantidad_configs, Conf
     return -1;
 }
 
-int inventario(EntradaCache **entradas_cache, size_t *tamanno_total, int *cantidad_entradas, char *dir_directorio) {
+int inventario(EntradaCache **entradas_cache, size_t *tamanno_total, size_t *tamanno_total_regla, int *cantidad_entradas, char *dir_directorio, char *id_regla) {
     DIR *dir = opendir(dir_directorio);
     if (dir == NULL) {
         perror("inventario");
@@ -215,6 +234,7 @@ int inventario(EntradaCache **entradas_cache, size_t *tamanno_total, int *cantid
     struct dirent *dp;
     errno = 0;
     int largo;
+    // Contar la cantidad de .meta
     while ((dp = readdir(dir)) != NULL) {
         largo = strlen(dp->d_name);
         if ((largo > 5) && (!strcmp(dp->d_name + largo - 5, ".meta"))) {
@@ -253,10 +273,13 @@ int inventario(EntradaCache **entradas_cache, size_t *tamanno_total, int *cantid
                 return -1;
             }
             *tamanno_total += m.tamanno;
-            char hash[17];
-            snprintf(hash, sizeof(hash), "%.*s", largo - 5, dp->d_name);
-            snprintf(ptr_entradas_cache[i].hash, 17, "%s", hash);
-            ptr_entradas_cache[i].meta = m;
+            if (!strcmp(m.id_regla, id_regla)) {
+                *tamanno_total_regla += m.tamanno;
+                char hash[17];
+                snprintf(hash, sizeof(hash), "%.*s", largo - 5, dp->d_name);
+                snprintf(ptr_entradas_cache[i].hash, 17, "%s", hash);
+                ptr_entradas_cache[i].meta = m;
+            }
             i++;
         }
     }
@@ -408,7 +431,27 @@ int extraer_booleano(char *inicio_config, char *str_buscar) {
     }
 }
 
-char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, ReglaURL *reglas, int cantidad_configs, size_t *largo_salida, const char *env_dir_cache) {
+char *extraer_tipo(ruta) {
+    int fin_ruta = strlen(ruta);
+    char *ultimo_slash = strrchr(ruta, '/');
+    if (ultimo_slash == NULL) {
+        return NULL;
+    }
+    char *punto = strrchr(ultimo_slash, '.');
+    if (punto == NULL) return "otros";
+    char tipo[12];
+    snprintf(tipo, sizeof(tipo), "%s", punto + 1);
+    // Pasar todo a minuscula
+    for (int i = 0; tipo[i]; i++) {
+        tipo[i] = tolower((unsigned char)tipo[i]);
+    }
+    if (strcmp(tipo, "html") || strcmp(tipo, "css") || strcmp(tipo, "js") || strcmp(tipo, "png") || strcmp(tipo, "jpg") || strcmp(tipo, "gif") || strcmp(tipo, "svg") || strcmp(tipo, "json")) {
+        return "otros";
+    }
+    return tipo;
+}
+
+char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantidad_configs, ReglaURL *reglas,  int cantidad_reglas, size_t *largo_salida, const char *env_dir_cache) {
     // Extraer el metodo
     // Se coloca en el primer ' ' para obtener el metodo y luego obtener el parametro de la peticion
     char *puntero_fin_buscado = strchr(buffer_entrada, ' ');
@@ -443,6 +486,14 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, ReglaURL *r
         session += 9;
     }
     printf("Ruta: %s\n", ruta);
+    // Extraer el tipo de la ruta (.jpg, .png, ...etc)
+    char *tipo_ruta = extraer_tipo(ruta);
+    if (tipo_ruta == NULL) {
+        fprintf(stderr, "No se encontró '/' en la ruta a la hora de identificar el tipo de recurso\n");
+        free(metodo);
+        free(ruta);
+        return NULL;
+    }
 
     // Extraer el host
     char *puntero_inicio_host = strstr(buffer_entrada, "Host: ");
@@ -491,6 +542,44 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, ReglaURL *r
     }
 
     // Buscar la configuracion de esta URL
+    ReglaURL regla;
+    if (reglas != NULL) {
+        char id_candidato[24] = {0};
+        int n = 0;
+        for (int i = 0, i < cantidad_reglas; i++) {
+            if ((reglas[i].dominio == host) && (fnmatch(reglas[i].patron, ruta) == 0)) {
+                snprintf(id_candidato, sizeof(id_candidato, "%s", reglas[i].id));
+                n++;
+                break;
+            }
+        }
+        if (n == 1) {
+            for (int i = 0, i < cantidad_reglas; i++) {
+                if ((!strcmp(reglas[i].id, id_candidato)) && (!strcmp(reglas[i].tipo, tipo_ruta))) {
+                    regla = regla[i];
+                    n++;
+                    break;
+                }
+            }
+        } 
+        if (n != 2) {
+            ReglaURL regla_sintetica;
+            regla_sintetica.id = "__dominio__";
+            regla_sintetica.ttl = config.ttl;
+            regla_sintetica.algoritmo = config.algoritmo;
+            regla_sintetica.tamanno_cache = config.tamanno_maximo;
+            regla_sintetica.requiere_auth = config.requiere_auth;
+            regla = regla_sintetica;
+        }
+    } else {
+        ReglaURL regla_sintetica;
+        regla_sintetica.id = "__dominio__";
+        regla_sintetica.ttl = config.ttl;
+        regla_sintetica.algoritmo = config.algoritmo;
+        regla_sintetica.tamanno_cache = config.tamanno_maximo;
+        regla_sintetica.requiere_auth = config.requiere_auth;
+        regla = regla_sintetica;
+    }
 
     /*
         Primero que todo hay que verificar reglas != NULL
@@ -506,7 +595,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, ReglaURL *r
 
     // Verificar autenticacion
     char *api_key = strcasestr(buffer_entrada, "x-api-key: ");
-    if (config.requiere_auth) {
+    if (regla.requiere_auth) {
         if (api_key != NULL) {
             api_key += 11;
             if (strncmp(api_key, config.api_key, strlen(config.api_key))) {
@@ -629,13 +718,14 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, ReglaURL *r
 
         // Obtener el tamanno total del directorio cache del dominio y una lista de las entradas presentes en cache
         size_t tamanno_total = 0;
+        size_t tamanno_total_regla = 0;
         EntradaCache *entradas_cache;
         int cantidad_entradas = 0;
-        if (inventario(&entradas_cache, &tamanno_total, &cantidad_entradas, dir_directorio) == -1) {
+        if (inventario(&entradas_cache, &tamanno_total, &tamanno_total_regla, &cantidad_entradas, dir_directorio, regla.id) == -1) {
             return NULL;
         }
-        while (tamanno_total + *largo_salida > config.tamanno_maximo) {
-            int indice_victima = elegir_victima(entradas_cache, config.algoritmo, cantidad_entradas);
+        while (tamanno_total_regla + *largo_salida > regla.tamanno_cache) {
+            int indice_victima = elegir_victima(entradas_cache, regla.algoritmo, cantidad_entradas);
             // Eliminar recurso
             char ruta_meta[sizeof(dir_directorio) + 1 + 16 + 5];
             char ruta_dat[sizeof(dir_directorio) + 1 + 16 + 4];
@@ -661,7 +751,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, ReglaURL *r
             return NULL;
         }
 
-        if ((escribir_meta(dir_punto_meta, clave, tam_bytes, config.ttl)) == -1) {
+        if ((escribir_meta(dir_punto_meta, clave, regla.id, tam_bytes, regla.ttl)) == -1) {
             printf("Error al intentar escribir el .meta");
             free(respuesta_origen);
             return NULL;
@@ -702,17 +792,6 @@ int obtener_algoritmo(char *algoritmo_texto) {
     }
     return -1;
 }
-
-typedef struct {
-    char id[24];
-    char dominio[256];
-    char patron[256];
-    char tipo[12];
-    long ttl;
-    enum AlgReemplazo algoritmo;
-    long tamanno_cache;
-    int requiere_auth;
-} ReglaURL;
 
 int cargar_configs(ConfigDominio *configs, int *cantidad_configs, int env_cant_max_dominios, ReglaURL *reglas, int *cantidad_reglas, int env_cant_max_reglas) {
     char *respuesta_api = consultar_node_api("/api/config");
@@ -1176,7 +1255,7 @@ int main(void) {
 
         printf("Entrada: %s", entrada);
         size_t largo_salida = 0;
-        char *respuesta = procesar_entrada(entrada, configs, reglas, cantidad_configs, &largo_salida, env_dir_cache);
+        char *respuesta = procesar_entrada(entrada, configs, cantidad_configs, reglas, cantidad_reglas, &largo_salida, env_dir_cache);
         if (respuesta != NULL) {
             ssize_t escritos = conexion_escribir(&conexion, respuesta, largo_salida);
             if (escritos < 0 || (size_t)escritos != largo_salida) {
