@@ -9,12 +9,19 @@ Cuatro clusters, todos **zonales** (el credito gratuito de GKE solo cubre
 clusters zonales, y un cluster regional replica los nodos en tres zonas,
 triplicando el costo sin avisar).
 
-| Cluster | Zona | Charts |
-|---|---|---|
-| `origenes` | `us-central1-a` | `interceptor`, `apache`, `rest-api-java` |
-| `cache-cr` | `us-central1-a` | `zonal-cache` con `valores-cr.yaml` |
-| `cache-eu` | `europe-west1-b` | `zonal-cache` con `valores-eu.yaml` |
-| `cache-br` | `southamerica-east1-a` | `zonal-cache` con `valores-br.yaml` |
+| Cluster | Zona | Charts | TLS |
+|---|---|---|---|
+| `origenes` | `us-central1-a` | `interceptor`, `apache`, `rest-api-java` | — |
+| `cache-cr` | `us-central1-a` | `zonal-cache` con `valores-cr.yaml` | no, puerto 80 |
+| `cache-eu` | `europe-west1-b` | `zonal-cache` con `valores-eu.yaml` | **si, puerto 443** |
+| `cache-br` | `southamerica-east1-a` | `zonal-cache` con `valores-br.yaml` | no, puerto 80 |
+
+La terminacion TLS se demuestra con la cache de Europa. Las otras dos sirven
+HTTP plano para que la cadena completa (DNS -> cache -> origen) se pueda
+recorrer con un curl corriente: desde Costa Rica el interceptor resuelve hacia
+la cache de CR, que es la que conviene tener sin TLS.
+
+El Secret `zonal-cache-tls` solo hace falta en `cache-eu`.
 
 ## Por que los origenes son LoadBalancer
 

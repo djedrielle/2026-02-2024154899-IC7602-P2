@@ -9,5 +9,5 @@ imagen:
   etiqueta: "1.0.0"
 
 servicio:
-  # Reservada con: gcloud compute addresses create cache-cr --region=us-central1
+  # La crea Terraform. Sacarla de: terraform output ips_caches
   ipEstatica: ""

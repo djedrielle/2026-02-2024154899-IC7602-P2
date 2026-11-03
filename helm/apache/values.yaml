@@ -20,17 +20,13 @@ servicio:
   # no existe fuera de aqui, y toda peticion terminaria en 502.
   #
   # La contrapartida es que queda expuesto a internet y alguien podria pedirle
-  # contenido salteandose la cache. Para cerrarlo, una regla de firewall que
-  # solo admita las tres IPs de las caches:
-  #
-  #   gcloud compute firewall-rules create apache-solo-caches \
-  #     --allow=tcp:80 --source-ranges=IP_CR,IP_EU,IP_BR \
-  #     --target-tags=origen
+  # contenido salteandose la cache. Eso lo cierra la regla de firewall
+  # "origenes-solo-caches" que crea Terraform (terraform/direcciones.tf), que
+  # solo admite las tres IPs de las caches sobre los nodos etiquetados "origen".
   tipo: LoadBalancer
   puerto: 80
 
-  # Reservada con:
-  #   gcloud compute addresses create apache-origen --region=us-central1
+  # La crea Terraform. Sacarla de: terraform output ip_apache
   #
   # Conviene que sea estatica: es el valor del campo origen_host de los dominios
   # configurados desde el UI, y si cambia hay que editarlos uno por uno.

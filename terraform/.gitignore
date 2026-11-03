@@ -1,0 +1,17 @@
+# El estado: contiene valores sensibles en texto plano.
+terraform.tfstate
+terraform.tfstate.*
+*.tfstate.backup
+
+# Valores concretos de esta instalacion.
+terraform.tfvars
+*.auto.tfvars
+
+# Proveedores descargados: cientos de MB que terraform init reconstruye.
+.terraform/
+
+# Planes guardados: tambien llevan valores sensibles.
+*.tfplan
+
+# .terraform.lock.hcl SI se versiona: fija las versiones exactas de los
+# proveedores para que el mismo codigo rinda el mismo plan en otra maquina.

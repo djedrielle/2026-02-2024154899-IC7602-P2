@@ -19,7 +19,7 @@ servicio:
   tipo: LoadBalancer
   puerto: 7070
 
-  # gcloud compute addresses create rest-api-java --region=us-central1
+  # La crea Terraform. Sacarla de: terraform output ip_rest_api_java
   ipEstatica: ""
 
 # IMPORTANTE: el ENTRYPOINT de la imagen usa -XX:MaxRAMPercentage=60, que
