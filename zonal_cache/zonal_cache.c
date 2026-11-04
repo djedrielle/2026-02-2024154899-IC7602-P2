@@ -651,8 +651,18 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
             // Leer variables de entorno
             const char *env_node_api_host = env_texto("NODE_API_HOST", "zonal-cache-rest-api-nodejs.vercel.app");
             int env_ui_port = env_entero("UI_PORT", 443);
-            char ruta_location[256];
-            snprintf(ruta_location, sizeof(ruta_location), "https://%s:%d/login?redirect=%s%s", env_node_api_host, env_ui_port, host_completo, ruta);
+            const char *esquema = env_entero("TLS_HABILITADO", 0) ? "https" : "http";
+            char ruta_location[1024];
+            int largo_location = snprintf(ruta_location, sizeof(ruta_location), "https://%s:%d/login?redirect=%s://%s%s", env_node_api_host, env_ui_port, esquema, host_completo, ruta);
+
+            if (largo_location < 0 || (size_t)largo_location >= sizeof(ruta_location)) {
+                fprintf(stderr, "El Location del 302 no cabe en %zu bytes (necesita %d), se descarta la peticion\n",sizeof(ruta_location), largo_location);
+                free(metodo);
+                free(ruta);
+                free(host);
+                free(host_completo);
+                return respuesta_502(largo_salida);
+            }
             free(metodo);
             free(ruta);
             free(host);

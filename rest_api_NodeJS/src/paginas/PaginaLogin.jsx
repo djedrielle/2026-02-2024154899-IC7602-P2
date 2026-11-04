@@ -82,10 +82,17 @@ export function PaginaLogin() {
 
                 /* Solo se arma una URL de prueba hacia un destino autorizado. Si el
                  * destino no lo estaba, se cae al primer dominio del usuario: mostrar
-                 * el token pegado a un host ajeno anularia la verificacion de arriba. */
+                 * el token pegado a un host ajeno anularia la verificacion de arriba.
+                 *
+                 * El esquema se hereda del destino cuando se pudo interpretar, porque
+                 * una cache con terminacion TLS sirve por https y una URL con http://
+                 * no funcionaria. Si no hay destino, no hay forma de saberlo desde
+                 * aqui: la cache manda el redirect sin esquema. Se asume http, que es
+                 * el caso de las caches sin TLS. */
+                const esquema = destino !== null ? destino.protocol : 'http:';
                 const base = estaAutorizado(destino, dominios)
                     ? destino
-                    : new URL(`http://${dominios[0] ?? 'midominio.com'}/`);
+                    : new URL(`${esquema}//${dominios[0] ?? 'midominio.com'}/`);
 
                 setUrlPrueba(conSesion(base, s.token).toString());
                 setSesion(s);

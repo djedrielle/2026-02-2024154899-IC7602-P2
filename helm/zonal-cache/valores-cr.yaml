@@ -6,7 +6,7 @@
 
 imagen:
   repositorio: us-central1-docker.pkg.dev/zonal-cache/redes/zonal-cache
-  etiqueta: "1.1.1"
+  etiqueta: "1.1.2"
 
 servicio:
   # La crea Terraform. Sacarla de: terraform output ips_caches
