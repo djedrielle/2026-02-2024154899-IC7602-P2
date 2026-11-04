@@ -1,0 +1,123 @@
+# Toda la plataforma en una sola maquina, para probar sin Kubernetes ni GCP.
+#
+#   cp .env.ejemplo .env     # y ajustar CONFIG_API_KEY
+#   docker compose up --build
+#
+# Los cuatro servicios quedan en la misma red interna, asi que se ven entre
+# ellos por su NOMBRE: la cache puede usar "apache" o "rest-api-java" como
+# origen, sin IPs. Es la diferencia principal con el despliegue en GKE, donde
+# cada componente vive en un cluster distinto y hace falta IP publica.
+
+services:
+
+  # --- Origenes -------------------------------------------------------------
+
+  apache:
+    build:
+      context: .
+      dockerfile: apache/Dockerfile
+    # Los puertos del anfitrion son configurables porque es facil que ya esten
+    # ocupados: el 8081 lo usa el "make run-apache" de este mismo repositorio.
+    ports:
+      - "${PUERTO_APACHE:-8081}:80"
+    healthcheck:
+      # La imagen httpd:2.4 no trae wget ni curl, pero si bash, y bash puede
+      # abrir sockets por /dev/tcp. Es la forma de sondear sin agregar paquetes
+      # a una imagen de produccion solo para esto.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/80 && echo -e 'GET / HTTP/1.0\\r\\n\\r' >&3 && head -1 <&3 | grep -q 200"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  rest-api-java:
+    build:
+      context: .
+      dockerfile: rest_api_Java/Dockerfile
+    environment:
+      PUERTO: "7070"
+    ports:
+      - "${PUERTO_JAVA:-7070}:7070"
+    healthcheck:
+      # /salud existe aparte de /noticias justamente para esto: si la sonda
+      # pidiera el recurso real, una lista vacia la haria fallar sin motivo.
+      test: ["CMD", "sh", "-c", "wget -qO- http://localhost:7070/salud >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # --- Cache zonal ----------------------------------------------------------
+
+  zonal-cache:
+    build:
+      context: .
+      dockerfile: zonal_cache/Dockerfile
+    environment:
+      ZONAL_PUERTO_IN: "9777"
+      CACHE_DIR: /var/cache/zonal
+
+      # 64 y no el 16 del codigo: el API aplana cada regla de URL por cada tipo
+      # de archivo, asi que una sola regla con los 9 tipos produce 9 filas.
+      CANT_MAX_REGLAS: "64"
+      CANT_MAX_DOMINIOS: "16"
+
+      # 65535 y no 65536: env_entero valida el rango de un numero de PUERTO
+      # (0-65535) y lo aplica tambien a los tamannos. 65536 se rechaza y cae al
+      # valor por omision.
+      MAX_TAM_ENTRADA: "65535"
+
+      # El API y el UI viven en Vercel: la configuracion de dominios y reglas
+      # sale de ahi, no de este compose.
+      NODE_API_HOST: ${NODE_API_HOST:-zonal-cache-rest-api-nodejs.vercel.app}
+      NODE_API_PORT: ${NODE_API_PORT:-443}
+      NODE_API_TLS: ${NODE_API_TLS:-1}
+      UI_PORT: ${UI_PORT:-443}
+
+      # El \r\n final es obligatorio: asi se separan los encabezados HTTP.
+      # Va entre comillas DOBLES porque en YAML ese estilo interpreta las
+      # secuencias de escape; con comillas simples viajarian las letras \ r \ n
+      # literales y la peticion al API saldria mal formada.
+      EXTRA_HEADERS: "x-config-key: ${CONFIG_API_KEY:-ABCDEFG}\r\n"
+
+      TLS_HABILITADO: ${TLS_HABILITADO:-0}
+    ports:
+      - "${PUERTO_CACHE:-9777}:9777"
+    volumes:
+      # El contenido cacheado sobrevive a "docker compose restart" pero no a
+      # "docker compose down -v".
+      - cache-datos:/var/cache/zonal
+    depends_on:
+      apache:
+        condition: service_healthy
+      rest-api-java:
+        condition: service_healthy
+
+  # --- DNS Interceptor ------------------------------------------------------
+
+  dns-interceptor:
+    build:
+      context: .
+      dockerfile: interceptor/Dockerfile
+    environment:
+      DNS_INTERCEPTOR_PORT: "5000"
+      NODE_API_HOST: ${NODE_API_HOST:-zonal-cache-rest-api-nodejs.vercel.app}
+      NODE_API_PORT: ${NODE_API_PORT:-443}
+      NODE_API_TLS: ${NODE_API_TLS:-1}
+
+      # Dominios que administra la plataforma. El resto se reenvia a DNS_EXTERNO
+      # sin tocarlo, de modo que este interceptor se puede poner como resolvedor
+      # del sistema sin dejarlo sin internet.
+      DOMINIOS_PROPIOS: ${DOMINIOS_PROPIOS:-crhoy.com,api.demo.cr,sitio.demo.cr,httpforever.com}
+      DNS_EXTERNO: ${DNS_EXTERNO:-8.8.8.8}
+    ports:
+      # Un puerto alto y no el 53: en Linux los puertos bajo 1024 necesitan
+      # privilegios, y en la mayoria de las distribuciones el 53 ya lo ocupa
+      # systemd-resolved.
+      #
+      # Tampoco el 5353, que es mDNS y suele estar tomado por avahi-daemon.
+      #
+      #   dig @127.0.0.1 -p 5300 crhoy.com
+      - "${PUERTO_DNS:-5300}:5000/udp"
+
+volumes:
+  cache-datos:
