@@ -1,0 +1,35 @@
+Cache zonal "{{ .Release.Name }}" instalada.
+
+Faltan dos pasos que Helm no puede hacer solo.
+
+1. Esperar la IP publica y anotarla:
+
+     kubectl get svc {{ .Release.Name }}-zonal-cache -w
+
+{{- if not .Values.servicio.ipEstatica }}
+
+   OJO: no se fijo una IP estatica (servicio.ipEstatica esta vacio), asi que
+   GCP asigno una efimera. Va a cambiar la proxima vez que se recree el
+   Service, y entonces habra que repetir el paso 2.
+{{- end }}
+
+2. Cargar esa IP en la coleccion zonal_ip de Firestore, bajo el codigo de pais
+   de esta region. Mientras no se haga, el DNS Interceptor sigue devolviendo la
+   IP anterior y nada de esto se nota desde el cliente.
+
+Para comprobar que arranco bien:
+
+     kubectl logs -l app={{ .Release.Name }}-zonal-cache --tail=30
+
+   Si dice "el API devolvio N reglas y el maximo compilado es M", suba
+   limites.cantMaxReglas y vuelva a aplicar.
+
+   Si dice "la respuesta del API no trae el campo cantidad" con lo recibido en
+   blanco, el secreto no esta llegando bien: revise que el Secret
+   {{ .Values.nodeApi.secreto.nombre }} exista y que su valor termine en CRLF.
+
+{{- if .Values.tls.habilitado }}
+
+Terminacion TLS habilitada: requiere el Secret {{ .Values.tls.secreto }} con el
+certificado y la llave. Si no existe, el pod se queda en ContainerCreating.
+{{- end }}

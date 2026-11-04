@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-interceptor
+  labels:
+    app: {{ .Release.Name }}-interceptor
+spec:
+  replicas: {{ .Values.replicas }}
+
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-interceptor
+
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-interceptor
+    spec:
+      containers:
+        - name: interceptor
+          image: "{{ .Values.imagen.repositorio }}:{{ .Values.imagen.etiqueta }}"
+          imagePullPolicy: {{ .Values.imagen.politicaDeDescarga }}
+
+          # Los numeros y booleanos van entre comillas porque Kubernetes exige
+          # que el valor de una variable de entorno sea una cadena. Sin quote,
+          # el manifiesto se rechaza con un error de tipo.
+          env:
+            - name: DNS_INTERCEPTOR_PORT
+              value: {{ .Values.puertoInterno | quote }}
+            - name: NODE_API_HOST
+              value: {{ .Values.nodeApi.host | quote }}
+            - name: NODE_API_PORT
+              value: {{ .Values.nodeApi.puerto | quote }}
+            - name: NODE_API_TLS
+              value: {{ ternary "1" "0" .Values.nodeApi.tls | quote }}
+
+            - name: DOMINIOS_PROPIOS
+              value: {{ .Values.dominiosPropios | quote }}
+            - name: DNS_EXTERNO
+              value: {{ .Values.dnsExterno | quote }}
+
+          ports:
+            - name: dns
+              containerPort: {{ .Values.puertoInterno }}
+              protocol: UDP
+
+          # Sin sondas, y no es un olvido.
+          #
+          # Kubernetes solo sabe sondear por HTTP, por TCP o ejecutando un
+          # comando. Este proceso solo habla UDP: no tiene endpoint HTTP y un
+          # tcpSocket contra el 5000 fallaria siempre, porque ahi no hay nada
+          # escuchando en TCP, y el contenedor entraria en reinicio perpetuo.
+          #
+          # La alternativa seria un exec con dig, pero obligaria a meter
+          # dnsutils en la imagen de produccion solo para eso.
+
+          resources:
+            requests:
+              cpu: {{ .Values.recursos.requests.cpu }}
+              memory: {{ .Values.recursos.requests.memoria }}
+            limits:
+              cpu: {{ .Values.recursos.limites.cpu }}
+              memory: {{ .Values.recursos.limites.memoria }}

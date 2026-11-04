@@ -1,0 +1,129 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-zonal-cache
+  labels:
+    app: {{ .Release.Name }}-zonal-cache
+spec:
+  replicas: {{ .Values.replicas }}
+
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-zonal-cache
+
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-zonal-cache
+    spec:
+      containers:
+        - name: zonal-cache
+          image: "{{ .Values.imagen.repositorio }}:{{ .Values.imagen.etiqueta }}"
+          imagePullPolicy: {{ .Values.imagen.politicaDeDescarga }}
+
+          env:
+            - name: ZONAL_PUERTO_IN
+              value: {{ .Values.puertoInterno | quote }}
+            - name: CACHE_DIR
+              value: {{ .Values.cache.directorio | quote }}
+
+            - name: CANT_MAX_DOMINIOS
+              value: {{ .Values.limites.cantMaxDominios | quote }}
+            - name: CANT_MAX_REGLAS
+              value: {{ .Values.limites.cantMaxReglas | quote }}
+            - name: MAX_TAM_ENTRADA
+              value: {{ .Values.limites.maxTamEntrada | quote }}
+
+            - name: NODE_API_HOST
+              value: {{ .Values.nodeApi.host | quote }}
+            - name: NODE_API_PORT
+              value: {{ .Values.nodeApi.puerto | quote }}
+            - name: NODE_API_TLS
+              value: {{ ternary "1" "0" .Values.nodeApi.tls | quote }}
+            - name: UI_PORT
+              value: {{ .Values.ui.puerto | quote }}
+
+            # El secreto compartido con el API. Viene del Secret y nunca pasa
+            # por values.yaml, que se commitea.
+            - name: EXTRA_HEADERS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.nodeApi.secreto.nombre }}
+                  key: {{ .Values.nodeApi.secreto.clave }}
+
+            - name: TLS_HABILITADO
+              value: {{ ternary "1" "0" .Values.tls.habilitado | quote }}
+            {{- if .Values.tls.habilitado }}
+            # Las rutas donde el volumen de abajo monta el Secret de tipo tls.
+            # Los nombres tls.crt y tls.key los fija Kubernetes, no se eligen.
+            - name: CERTIFICADO_DIR
+              value: /etc/zonal-cache/tls/tls.crt
+            - name: PRIVATE_KEY_DIR
+              value: /etc/zonal-cache/tls/tls.key
+            {{- end }}
+
+          ports:
+            - name: cache
+              containerPort: {{ .Values.puertoInterno }}
+              protocol: TCP
+
+          volumeMounts:
+            - name: datos
+              mountPath: {{ .Values.cache.directorio }}
+            {{- if .Values.tls.habilitado }}
+            - name: certificados
+              mountPath: /etc/zonal-cache/tls
+              readOnly: true
+            {{- end }}
+
+          # SIN readinessProbe NI livenessProbe, en ningun modo. No es un olvido.
+          #
+          # La cache atiende UNA conexion a la vez: no hace fork ni usa hilos.
+          # Mientras consulta al origen (que puede tardar segundos) no llama a
+          # accept(), asi que las conexiones de las sondas se quedan en la cola
+          # del kernel y expiran. Kubernetes concluye que el proceso murio y lo
+          # reinicia EN MEDIO de la peticion que estaba atendiendo. El resultado
+          # es un bucle de reinicios que se dispara justo cuando hay trafico.
+          #
+          # Una sonda que mata al proceso por estar ocupado es peor que no
+          # tener sonda. El balanceador de GCP sigue comprobando la salud del
+          # NODO por su cuenta (tcp:10256, el healthz de kube-proxy), de modo
+          # que un nodo caido se saca de rotacion igual.
+          {{- if not .Values.tls.habilitado }}
+
+          # El startupProbe si se conserva cuando no hay TLS: corre antes de que
+          # exista trafico, asi que no compite con nadie, y retrasa la entrada al
+          # Service hasta que la cache termine de cargar /api/config y escuche de
+          # verdad. Con TLS no se puede: ninguna sonda de Kubernetes completa un
+          # saludo TLS, y el SSL_accept se quedaria bloqueado esperandolo.
+          startupProbe:
+            tcpSocket:
+              port: cache
+            periodSeconds: 3
+            failureThreshold: 20
+          {{- end }}
+
+          resources:
+            requests:
+              cpu: {{ .Values.recursos.requests.cpu }}
+              memory: {{ .Values.recursos.requests.memoria }}
+            limits:
+              cpu: {{ .Values.recursos.limites.cpu }}
+              memory: {{ .Values.recursos.limites.memoria }}
+
+      volumes:
+        - name: datos
+          {{- if .Values.cache.volumenPersistente }}
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-zonal-cache
+          {{- else }}
+          # emptyDir: se crea con el pod y muere con el. La cache se repuebla
+          # sola desde el origen, asi que perderla no rompe nada, solo cuesta
+          # unos fallos de cache tras cada reprogramacion.
+          emptyDir: {}
+          {{- end }}
+        {{- if .Values.tls.habilitado }}
+        - name: certificados
+          secret:
+            secretName: {{ .Values.tls.secreto }}
+        {{- end }}

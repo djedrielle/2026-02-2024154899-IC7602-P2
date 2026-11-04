@@ -1,0 +1,42 @@
+# Apache: uno de los origenes con los que el enunciado pide probar la cache.
+#
+# Vive en el cluster de us-central1, junto al interceptor y al API de Java. Las
+# caches zonales estan en OTROS clusters, y de ahi sale el tipo de Service.
+
+replicas: 1
+
+imagen:
+  # Cambiar PROYECTO por el de su Artifact Registry.
+  repositorio: us-central1-docker.pkg.dev/zonal-cache/redes/apache-origen
+  etiqueta: "1.0.0"
+  politicaDeDescarga: IfNotPresent
+
+servicio:
+  # LoadBalancer y no ClusterIP, aunque sea un origen interno.
+  #
+  # Un ClusterIP solo es enrutable dentro de su propio cluster. Las caches
+  # corren en otros tres, asi que con ClusterIP no podrian resolverlo ni
+  # alcanzarlo: el campo origen_host del dominio apuntaria a una IP virtual que
+  # no existe fuera de aqui, y toda peticion terminaria en 502.
+  #
+  # La contrapartida es que queda expuesto a internet y alguien podria pedirle
+  # contenido salteandose la cache. Eso lo cierra la regla de firewall
+  # "origenes-solo-caches" que crea Terraform (terraform/direcciones.tf), que
+  # solo admite las tres IPs de las caches sobre los nodos etiquetados "origen".
+  tipo: LoadBalancer
+  puerto: 80
+
+  # La crea Terraform. Sacarla de: terraform output ip_apache
+  #
+  # Conviene que sea estatica: es el valor del campo origen_host de los dominios
+  # configurados desde el UI, y si cambia hay que editarlos uno por uno.
+  ipEstatica: ""
+
+# Apache sirve archivos estaticos: no necesita casi nada.
+recursos:
+  requests:
+    cpu: 10m
+    memoria: 32Mi
+  limites:
+    cpu: 200m
+    memoria: 128Mi

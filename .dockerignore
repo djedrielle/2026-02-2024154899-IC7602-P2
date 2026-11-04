@@ -1,0 +1,33 @@
+# El contexto de build es la raiz del repositorio, porque los dos ejecutables
+# en C comparten comun/ y se compilan con el Makefile de aqui. Sin este archivo,
+# cada build empaqueta y transfiere al demonio de Docker todo lo que sigue.
+
+# 243 MB que se reinstalan dentro de la imagen de todos modos
+**/node_modules
+
+# salida de compilacion de la maquina de desarrollo: se recompila en la imagen,
+# y copiarla arriesga meter binarios enlazados contra otra version de libc
+bin/
+build/
+**/target/
+**/dist/
+
+.git
+.github
+
+# estado y configuracion local
+**/.vercel
+**/.env*
+**/cache/
+**/*.log
+
+# llaves y certificados: nunca dentro de una imagen, van como Secret
+**/*.pem
+**/*.key
+**/zonal-cache-firebase-adminsdk-*.json
+
+# nada de esto hace falta para construir
+auxiliares/
+docu/
+practica-c/
+**/*.md

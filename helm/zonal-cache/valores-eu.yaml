@@ -1,0 +1,41 @@
+# Cache zonal de Europa. Cluster en europe-west1-b.
+#
+# ESTA ES LA UNICA DE LAS TRES CON TERMINACION TLS. Las de Centroamerica y
+# Suramerica sirven HTTP plano.
+#
+# Se eligio esta y no la de Centroamerica porque desde Costa Rica el
+# interceptor resuelve hacia la cache de CR: dejandola en HTTP plano, la
+# demostracion de la cadena completa (DNS -> cache -> origen) se hace con un
+# curl corriente. La terminacion TLS se demuestra aparte, apuntando directo a
+# esta IP.
+#
+# Para moverla a otra region, basta con pasar este bloque tls al archivo de
+# valores que corresponda y ajustar servicio.puerto en ambos.
+#
+#   helm install cache-eu ./helm/zonal-cache -f helm/zonal-cache/valores-eu.yaml
+#
+# Tras instalar, la IP de este Service se carga en Firestore bajo el pais ES.
+
+imagen:
+  repositorio: us-central1-docker.pkg.dev/zonal-cache/redes/zonal-cache
+  etiqueta: "1.1.2"
+
+tls:
+  habilitado: true
+  # Hay que crear el Secret ANTES de instalar el chart, y SOLO en este cluster:
+  #
+  #   gcloud container clusters get-credentials cache-eu --zone=europe-west1-b
+  #   kubectl create secret tls zonal-cache-tls --cert=cert.pem --key=clave.pem
+  #
+  # Si no existe, el pod se queda en ContainerCreating indefinidamente: el
+  # kubelet reintenta montar el volumen y nunca llega a arrancar el contenedor.
+  secreto: zonal-cache-tls
+
+servicio:
+  # 443 y no 80: con TLS activo la cache ya no entiende HTTP plano, y dejarlo en
+  # 80 haria que cualquier cliente que pruebe http:// reciba una respuesta TLS
+  # con un error incomprensible.
+  puerto: 443
+
+  # La crea Terraform. Sacarla de: terraform output ips_caches
+  ipEstatica: ""

@@ -1,0 +1,24 @@
+{{- if .Values.cache.volumenPersistente }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-zonal-cache
+  labels:
+    app: {{ .Release.Name }}-zonal-cache
+spec:
+  accessModes:
+    # ReadWriteOnce: un solo nodo lo monta para escritura. Alcanza porque hay
+    # una sola replica. Con mas de una, los pods que cayeran en otro nodo se
+    # quedarian esperando el volumen para siempre, asi que subir replicas exige
+    # pasar a volumenPersistente: false.
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.cache.tamanno }}
+{{- end }}
+
+{{/*
+El archivo entero esta dentro del if, asi que con volumenPersistente: false no
+se genera ningun objeto. Helm descarta sin quejarse las plantillas que rinden
+solo espacios en blanco.
+*/}}

@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-zonal-cache
+  labels:
+    app: {{ .Release.Name }}-zonal-cache
+spec:
+  type: {{ .Values.servicio.tipo }}
+
+  {{- if .Values.servicio.ipEstatica }}
+  loadBalancerIP: {{ .Values.servicio.ipEstatica }}
+  {{- end }}
+
+  selector:
+    app: {{ .Release.Name }}-zonal-cache
+
+  ports:
+    - name: cache
+      port: {{ .Values.servicio.puerto }}
+      targetPort: cache
+      protocol: TCP
+
+# La IP que asigne este Service es la que va en la coleccion zonal_ip de
+# Firestore, bajo el codigo de pais de la region:
+#
+#     kubectl get svc {{ .Release.Name }}-zonal-cache \
+#       -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+#
+# Mientras no se cargue ahi, el interceptor sigue devolviendo la IP anterior.

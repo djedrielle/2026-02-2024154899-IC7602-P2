@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-apache
+  labels:
+    app: {{ .Release.Name }}-apache
+spec:
+  type: {{ .Values.servicio.tipo }}
+
+  {{- if .Values.servicio.ipEstatica }}
+  loadBalancerIP: {{ .Values.servicio.ipEstatica }}
+  {{- end }}
+
+  # Mismas etiquetas que el selector del Deployment.
+  selector:
+    app: {{ .Release.Name }}-apache
+
+  ports:
+    - name: http
+      port: {{ .Values.servicio.puerto }}
+      targetPort: http
+      protocol: TCP
+
+# El valor que va en el campo origen_host del dominio configurado desde el UI:
+#
+#     kubectl get svc {{ .Release.Name }}-apache \
+#       -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+#
+# Tiene que ser la IP publica, NO el nombre corto del Service. Las caches
+# corren en otros clusters y ahi ese nombre no resuelve.

@@ -1,0 +1,36 @@
+# REST API en Java. Vive en el cluster de us-central1, junto al interceptor y
+# al Apache.
+
+replicas: 1
+
+imagen:
+  repositorio: us-central1-docker.pkg.dev/zonal-cache/redes/rest-api-java
+  etiqueta: "1.0.0"
+  politicaDeDescarga: IfNotPresent
+
+# Lo lee Main.puerto().
+puerto: 7070
+
+servicio:
+  # LoadBalancer por la misma razon que el Apache: las caches zonales corren en
+  # otros clusters y un ClusterIP no es enrutable fuera del suyo. Ver el
+  # comentario extenso en helm/apache/values.yaml, incluida la regla de firewall
+  # para que solo las tres caches puedan alcanzarlo.
+  tipo: LoadBalancer
+  puerto: 7070
+
+  # La crea Terraform. Sacarla de: terraform output ip_rest_api_java
+  ipEstatica: ""
+
+# IMPORTANTE: el ENTRYPOINT de la imagen usa -XX:MaxRAMPercentage=60, que
+# calcula la heap sobre el limite DE ESTE BLOQUE. Si se quita limites.memoria,
+# la JVM vuelve a calcularla sobre la memoria de la maquina y en un nodo
+# e2-small la pide toda, hasta que el contenedor muere por OOMKilled sin dejar
+# rastro en la bitacora de la aplicacion.
+recursos:
+  requests:
+    cpu: 50m
+    memoria: 256Mi
+  limites:
+    cpu: 500m
+    memoria: 512Mi

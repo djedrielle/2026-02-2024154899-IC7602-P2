@@ -2,7 +2,6 @@
 [0-9][0-9]-*
 !*.c
 */plantilla
-*/interceptor
 */zonal_cache
 */node_modules
 */*.log
@@ -10,9 +9,15 @@
 /build
 */cache/
 */*.pem
+/notas_grabacion.txt
 
 # configuracion de npm propia de cada maquina (trae rutas absolutas del HOME)
 .npmrc
 
 # salida de compilacion de Maven
 target/
+# credenciales generadas para la demostracion
+credenciales-demo.txt
+
+# variables locales del docker compose
+.env

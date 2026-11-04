@@ -36,7 +36,24 @@ export async function validar_sesion(token, dominio) {
     }
 
     if (dominio && !(Array.isArray(s.dominios) && s.dominios.includes(dominio))) {
-        return { valida: false, motivo: 'La sesion no cubre ese dominio' };
+        /* El arreglo guardado aqui es una foto tomada al iniciar sesion. Si el
+         * usuario registro un dominio despues, su sesion no lo cubre aunque sea
+         * el dueno, y tendria que volver a entrar sin que nada se lo explique.
+         *
+         * Antes de rechazar se relee la lista real del usuario. Es una lectura
+         * extra, pero solo en el camino del fallo: el caso normal sigue siendo
+         * una sola lectura por clave. */
+        const usuario = await db.collection('usuarios').doc(s.usuario).get();
+        const actuales = usuario.exists && Array.isArray(usuario.data().dominios)
+            ? usuario.data().dominios
+            : [];
+
+        if (!actuales.includes(dominio)) {
+            return { valida: false, motivo: 'La sesion no cubre ese dominio' };
+        }
+
+        // Se actualiza la foto para que la proxima peticion tome el atajo.
+        await doc.ref.update({ dominios: actuales });
     }
 
     return { valida: true, usuario: s.usuario, expiracion: s.expiracion };

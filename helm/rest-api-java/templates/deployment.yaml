@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-rest-api-java
+  labels:
+    app: {{ .Release.Name }}-rest-api-java
+spec:
+  replicas: {{ .Values.replicas }}
+
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-rest-api-java
+
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-rest-api-java
+    spec:
+      containers:
+        - name: rest-api-java
+          image: "{{ .Values.imagen.repositorio }}:{{ .Values.imagen.etiqueta }}"
+          imagePullPolicy: {{ .Values.imagen.politicaDeDescarga }}
+
+          env:
+            - name: PUERTO
+              value: {{ .Values.puerto | quote }}
+
+          ports:
+            - name: http
+              containerPort: {{ .Values.puerto }}
+              protocol: TCP
+
+          # /salud existe aparte de /noticias justamente para esto: si la sonda
+          # pidiera el recurso real, una lista vacia o un error de datos haria
+          # que Kubernetes reiniciara un proceso que esta sano.
+          #
+          # La JVM tarda mas en arrancar que Apache, de ahi el startupProbe: le
+          # da hasta 30 s (10 intentos x 3 s) antes de que empiecen a contar las
+          # otras dos sondas. Sin el, habria que inflar initialDelaySeconds de
+          # liveness, y entonces un cuelgue real tardaria todo eso en detectarse.
+          startupProbe:
+            httpGet:
+              path: /salud
+              port: http
+            periodSeconds: 3
+            failureThreshold: 10
+
+          readinessProbe:
+            httpGet:
+              path: /salud
+              port: http
+            periodSeconds: 10
+
+          livenessProbe:
+            httpGet:
+              path: /salud
+              port: http
+            periodSeconds: 20
+
+          resources:
+            requests:
+              cpu: {{ .Values.recursos.requests.cpu }}
+              memory: {{ .Values.recursos.requests.memoria }}
+            limits:
+              cpu: {{ .Values.recursos.limites.cpu }}
+              memory: {{ .Values.recursos.limites.memoria }}

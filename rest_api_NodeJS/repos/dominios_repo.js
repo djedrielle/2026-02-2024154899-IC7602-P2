@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { db } from '../lib/firestore.js';
 import { generar_token_verificacion } from '../lib/verificacion_dns.js';
+import { agregar_dominio_a_usuario, quitar_dominio_de_usuario } from './usuarios_repo.js';
 
 /* Valores que se aplican cuando el documento de Firestore no trae el campo.
  * Asi un documento incompleto no deja al Zonal Cache sin configuracion. */
@@ -243,6 +244,12 @@ export async function crear_dominio(email, dominio, datos) {
         creado: Date.now(),
     });
 
+    /* Sin esto el dominio queda con su propietario pero fuera del arreglo
+     * "dominios" del usuario, que es lo que consulta validar_sesion. El dueno
+     * configuraria una regla con autenticacion por usuario y recibiria 401 en
+     * su propio sitio. */
+    await agregar_dominio_a_usuario(email, dominio);
+
     return { creado: true, token };
 }
 
@@ -280,6 +287,10 @@ export async function borrar_dominio(email, dominio) {
         await Promise.all(hijos.docs.map((d) => d.ref.delete()));
     }
     await ref.delete();
+
+    // Simetrico a crear_dominio: si no, el usuario arrastra para siempre un
+    // dominio que ya no existe, y sus sesiones lo seguirian cubriendo.
+    await quitar_dominio_de_usuario(email, dominio);
 
     return { borrado: true };
 }

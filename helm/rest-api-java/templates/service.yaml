@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-rest-api-java
+  labels:
+    app: {{ .Release.Name }}-rest-api-java
+spec:
+  type: {{ .Values.servicio.tipo }}
+
+  {{- if .Values.servicio.ipEstatica }}
+  loadBalancerIP: {{ .Values.servicio.ipEstatica }}
+  {{- end }}
+
+  selector:
+    app: {{ .Release.Name }}-rest-api-java
+
+  ports:
+    - name: http
+      port: {{ .Values.servicio.puerto }}
+      targetPort: http
+      protocol: TCP
+
+# Para configurar este origen desde el UI:
+#
+#     origen_host:   la IP publica de este Service, no el nombre corto
+#     origen_puerto: {{ .Values.servicio.puerto }}
+#     tls:           false
+#
+#     kubectl get svc {{ .Release.Name }}-rest-api-java \
+#       -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+#
+# Y tener presente que la cache deduce el tipo de archivo de la extension de la
+# URL: /noticias no tiene ninguna, asi que cae en el tipo "otros". La regla de
+# URL para este origen tiene que configurar ese tipo.

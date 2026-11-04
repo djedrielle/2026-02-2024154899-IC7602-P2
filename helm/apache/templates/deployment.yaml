@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-apache
+  labels:
+    app: {{ .Release.Name }}-apache
+spec:
+  replicas: {{ .Values.replicas }}
+
+  # El selector tiene que coincidir con las etiquetas de la plantilla de abajo
+  # Y con las del Service. Si no coinciden, el Deployment crea pods que no
+  # administra y el Service no encuentra a quien mandarle trafico, sin que
+  # Kubernetes se queje de nada.
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-apache
+
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-apache
+    spec:
+      containers:
+        - name: apache
+          image: "{{ .Values.imagen.repositorio }}:{{ .Values.imagen.etiqueta }}"
+          imagePullPolicy: {{ .Values.imagen.politicaDeDescarga }}
+
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+
+          # readiness -> si falla, el Service deja de mandarle trafico
+          # liveness  -> si falla, Kubernetes reinicia el contenedor
+          #
+          # Apache levanta en menos de un segundo, asi que no hace falta
+          # startupProbe.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+
+          resources:
+            requests:
+              cpu: {{ .Values.recursos.requests.cpu }}
+              memory: {{ .Values.recursos.requests.memoria }}
+            limits:
+              cpu: {{ .Values.recursos.limites.cpu }}
+              memory: {{ .Values.recursos.limites.memoria }}

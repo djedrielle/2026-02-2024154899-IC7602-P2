@@ -1,0 +1,87 @@
+# Cache zonal. Estos son los valores por omision; cada region se instala con su
+# propio archivo (valores-cr.yaml, valores-eu.yaml, valores-br.yaml) que pisa
+# el nombre, la IP estatica y poco mas.
+
+replicas: 1
+
+imagen:
+  repositorio: us-central1-docker.pkg.dev/zonal-cache/redes/zonal-cache
+  etiqueta: "1.1.2"
+  politicaDeDescarga: IfNotPresent
+
+# ZONAL_PUERTO_IN. Sobre 1024, asi que el proceso corre sin privilegios.
+puertoInterno: 9777
+
+cache:
+  # CACHE_DIR. Ruta absoluta: el valor por omision del codigo es "cache",
+  # relativo al directorio de trabajo, y eso ya causo errores de mkdir.
+  directorio: /var/cache/zonal
+
+  # false -> emptyDir: el disco del nodo, y se pierde al reprogramar el pod.
+  #          Para la demostracion alcanza y no cuesta nada.
+  # true  -> PersistentVolumeClaim: sobrevive al reinicio, pero en GCP crea un
+  #          disco persistente que se factura aunque el pod este apagado.
+  volumenPersistente: false
+  tamanno: 1Gi
+
+limites:
+  cantMaxDominios: 16
+
+  # 64 y no el 16 del codigo a proposito. El API aplana cada regla de URL por
+  # cada tipo de archivo configurado, asi que una sola regla con los 9 tipos
+  # produce 9 filas. Con 5 reglas reales ya se generaron 18 y la cache se nego
+  # a arrancar con "el API devolvio 18 reglas y el maximo compilado es 16".
+  cantMaxReglas: 64
+
+  # 1024 se queda corto para una peticion con cookies.
+  maxTamEntrada: 65536
+
+nodeApi:
+  host: zonal-cache-rest-api-nodejs.vercel.app
+  puerto: 443
+  tls: true
+
+  # EXTRA_HEADERS no se pone aqui: lleva el secreto compartido con el API.
+  # Se lee de un Secret que hay que crear ANTES de instalar el chart.
+  #
+  # El valor tiene que terminar en CRLF o la peticion sale mal formada y la
+  # cache recibe una respuesta vacia. Ojo con $(...) en bash, que se come los
+  # saltos de linea finales; por eso se canaliza con printf:
+  #
+  #   printf 'x-config-key: %s\r\n' "$CONFIG_API_KEY" \
+  #     | kubectl create secret generic zonal-cache-config \
+  #         --from-file=extra-headers=/dev/stdin
+  secreto:
+    nombre: zonal-cache-config
+    clave: extra-headers
+
+# A donde manda el 302 cuando una regla exige usuario y contrasena. El host es
+# el mismo de nodeApi; el esquema esta quemado como https en el codigo, asi que
+# el puerto tiene que ser el de TLS.
+ui:
+  puerto: 443
+
+# Terminacion TLS del lado de la cache. Si se habilita, hay que crear antes el
+# Secret con el certificado y la llave:
+#
+#   kubectl create secret tls zonal-cache-tls --cert=cert.pem --key=clave.pem
+tls:
+  habilitado: false
+  secreto: zonal-cache-tls
+
+servicio:
+  tipo: LoadBalancer
+  puerto: 80
+
+  # IP estatica reservada en GCP. Es la que se carga en la coleccion zonal_ip
+  # de Firestore para que el interceptor la devuelva. Si se deja vacia, GCP
+  # asigna una efimera y habria que actualizar Firestore en cada despliegue.
+  ipEstatica: ""
+
+recursos:
+  requests:
+    cpu: 50m
+    memoria: 64Mi
+  limites:
+    cpu: 500m
+    memoria: 256Mi
