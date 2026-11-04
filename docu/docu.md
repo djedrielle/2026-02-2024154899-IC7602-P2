@@ -40,6 +40,10 @@ Docker, Helm y Terraform.
 ---
 
 ## 2. Arquitectura
+### Diagrama Estructural
+![Diagrama](diagrama1.png)
+
+### Diagrama Flujo
 
 ```
                     ┌──────────────────┐
