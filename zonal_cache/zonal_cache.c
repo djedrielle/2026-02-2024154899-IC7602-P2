@@ -16,6 +16,7 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <signal.h>
+#include <sys/wait.h>
 #include <fnmatch.h>
 #include <ctype.h>
 
@@ -23,6 +24,13 @@
 #include "../comun/variables_entorno.h"
 
 #define MAX_API_KEYS 8
+
+/* Segundos que se espera a que un cliente mande su peticion antes de cerrarle.
+ *
+ * Sin esto, una conexion que se abre y no habla deja al proceso que la atiende
+ * bloqueado en read() para siempre. Los navegadores abren conexiones
+ * especulativas (preconnect) que hacen exactamente eso. */
+#define SEGUNDOS_ESPERA_CLIENTE 10
 
 enum AlgReemplazo {
     LRU,
@@ -1142,6 +1150,12 @@ void conexion_cerrar(Conexion *c) {
 
 int main(void) {
     signal(SIGPIPE, SIG_IGN);
+
+    /* Cada conexion se atiende en un proceso hijo. Ignorar SIGCHLD hace que el
+     * nucleo los recoja solo: no hacen falta los codigos de salida y asi no se
+     * acumulan zombis. De paso, al estar ignorada la senal no interrumpe el
+     * accept() del padre, asi que no hay que manejar EINTR ahi. */
+    signal(SIGCHLD, SIG_IGN);
     srand(time(NULL));
     // Leer variables de entorno
     int env_max_tam_entrada = env_entero("MAX_TAM_ENTRADA", 32768);
@@ -1251,7 +1265,55 @@ int main(void) {
             continue;
         }
         printf("Cliente conectado, IP: %s, puerto: %i\n", inet_ntoa(client_address.sin_addr), ntohs(client_address.sin_port));
-        
+
+        /* Una conexion, un proceso.
+         *
+         * Antes la cache atendia de a una: mientras buscaba en el origen (dos
+         * segundos para una pagina real) las demas conexiones se quedaban en la
+         * cola del nucleo. Un navegador abre hasta seis en paralelo y pide
+         * decenas de recursos, asi que la pagina tardaba minutos y terminaba en
+         * ERR_TIMED_OUT, aunque un curl suelto funcionara.
+         *
+         * El fflush va antes del fork a proposito: el hijo hereda el buffer de
+         * stdout, y si queda algo sin volcar, cada hijo lo repetiria al salir. */
+        fflush(stdout);
+        pid_t hijo = fork();
+
+        if (hijo < 0) {
+            perror("fork");
+            close(client_socket);
+            continue;
+        }
+
+        if (hijo > 0) {
+            /* Padre: cierra SU copia del descriptor y vuelve a aceptar.
+             *
+             * Ese close no es opcional. Padre e hijo comparten el descriptor, y
+             * si el padre se queda con el suyo abierto la conexion no se cierra
+             * del todo cuando el hijo termina: se van acumulando descriptores
+             * hasta que accept() falla con EMFILE y la cache deja de aceptar. */
+            close(client_socket);
+            continue;
+        }
+
+        /* ---------- de aqui en adelante, solo el hijo ---------- */
+
+        // No lo usa, y mantenerlo abierto estorbaria al reiniciar el servicio.
+        close(server_socket);
+
+        /* Tiempo de espera de lectura.
+         *
+         * El fork resuelve la concurrencia, pero una conexion que no manda nada
+         * dejaria a SU hijo bloqueado en read() para siempre, y esos procesos se
+         * irian acumulando. Al vencer, read()/SSL_read() devuelven -1 con errno
+         * en EAGAIN, que mas abajo se trata como "este cliente no hablo". */
+
+        // Este paso es mega importante
+        struct timeval espera = { .tv_sec = SEGUNDOS_ESPERA_CLIENTE, .tv_usec = 0 };
+        if (setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &espera, sizeof(espera)) < 0) {
+            perror("setsockopt SO_RCVTIMEO");
+        }
+
         Conexion conexion = {client_socket, NULL};
         // Handshake
         if (ctx != NULL) {
@@ -1260,21 +1322,21 @@ int main(void) {
                 fprintf(stderr, "Error al crear el puntero SSL.\n");
                 ERR_print_errors_fp(stderr);
                 close(client_socket);
-                continue;
+                _exit(1);
             }
             if (!SSL_set_fd(ssl, conexion.fd)) {
                 fprintf(stderr, "Error al conectar el puntero al descriptor de archivo.\n");
                 ERR_print_errors_fp(stderr);
                 SSL_free(ssl);
                 close(client_socket);
-                continue;
+                _exit(1);
             }
             if (SSL_accept(ssl) <= 0) {
                 fprintf(stderr, "Error al ejecutar el handshake.\n");
                 ERR_print_errors_fp(stderr);
                 SSL_free(ssl);
                 close(client_socket);
-                continue;
+                _exit(1);
             }
             conexion.ssl = ssl;
         }
@@ -1284,7 +1346,18 @@ int main(void) {
         size_t total = 0;
         char *fin_encabezados = NULL;
         while (total < sizeof(entrada) - 1) {
+            errno = 0;
             ssize_t bytes_leidos = conexion_leer(&conexion, entrada + total, sizeof(entrada) - 1 - total);
+
+            /* EAGAIN/EWOULDBLOCK aqui no es un fallo: es el SO_RCVTIMEO
+             * venciendo porque el cliente no mando nada. Tipico del preconnect
+             * de los navegadores. Se cierra en silencio y el hijo termina; si
+             * se reportara como error llenaria la bitacora sin motivo. */
+            if (bytes_leidos < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                conexion_cerrar(&conexion);
+                _exit(0);
+            }
+
             if (bytes_leidos < 0 && conexion.ssl == NULL) {
                 perror("read");
                 break;
@@ -1303,7 +1376,7 @@ int main(void) {
         if (fin_encabezados == NULL) {
             fprintf(stderr, "Peticion incompleta o mas grande que el buffer (%zu bytes), se descarta\n", total);
             conexion_cerrar(&conexion);
-            continue;
+            _exit(0);
         }
 
         printf("Entrada: %s", entrada);
@@ -1319,6 +1392,11 @@ int main(void) {
         }
         // Una peticion por conexion: se responde y se cierra
         conexion_cerrar(&conexion);
+
+        /* El hijo termina aqui. Nunca vuelve al accept: eso es del padre.
+         * fflush porque _exit no vacia el buffer de stdout. */
+        fflush(stdout);
+        _exit(0);
     }
     SSL_CTX_free(ctx);
     close(server_socket);

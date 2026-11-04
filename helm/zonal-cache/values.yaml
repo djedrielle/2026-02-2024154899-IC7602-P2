@@ -6,7 +6,7 @@ replicas: 1
 
 imagen:
   repositorio: us-central1-docker.pkg.dev/zonal-cache/redes/zonal-cache
-  etiqueta: "1.0.0"
+  etiqueta: "1.1.0"
   politicaDeDescarga: IfNotPresent
 
 # ZONAL_PUERTO_IN. Sobre 1024, asi que el proceso corre sin privilegios.
