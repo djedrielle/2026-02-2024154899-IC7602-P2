@@ -34,6 +34,11 @@ spec:
             - name: NODE_API_TLS
               value: {{ ternary "1" "0" .Values.nodeApi.tls | quote }}
 
+            - name: DOMINIOS_PROPIOS
+              value: {{ .Values.dominiosPropios | quote }}
+            - name: DNS_EXTERNO
+              value: {{ .Values.dnsExterno | quote }}
+
           ports:
             - name: dns
               containerPort: {{ .Values.puertoInterno }}

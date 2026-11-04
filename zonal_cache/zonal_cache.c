@@ -627,7 +627,7 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
                 return respuesta_401(largo_salida);
             }
         } else if (session != NULL) {
-            char buffer_ruta[12 + strlen(session) + strlen(host) + 1];
+            char buffer_ruta[12 + strlen(session) + 9 + strlen(host) + 1];
             snprintf(buffer_ruta, sizeof(buffer_ruta), "/api/sesion/%s?dominio=%s", session, host);
             char *respuesta_api = consultar_node_api(buffer_ruta);
             if (respuesta_api == NULL) {

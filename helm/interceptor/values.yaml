@@ -5,7 +5,7 @@ replicas: 1
 
 imagen:
   repositorio: us-central1-docker.pkg.dev/zonal-cache/redes/dns-interceptor
-  etiqueta: "1.0.0"
+  etiqueta: "1.1.0"
   politicaDeDescarga: IfNotPresent
 
 # Puerto DENTRO del contenedor. Se deja sobre 1024 a proposito: asi el proceso
@@ -19,6 +19,19 @@ nodeApi:
   host: zonal-cache-rest-api-nodejs.vercel.app
   puerto: 443
   tls: true
+
+# Dominios que administra esta plataforma, separados por comas. Cualquier otro
+# se reenvia a dnsExterno sin tocarlo, de modo que el interceptor se puede poner
+# como resolvedor del sistema sin dejarlo sin internet.
+#
+# Acepta subdominios: "demo.cr" cubre "api.demo.cr".
+#
+# Vacio significa interceptar TODO, que es como funcionaba antes. Tenerlo asi en
+# produccion haria que cualquier dominio resuelva hacia la cache zonal.
+dominiosPropios: "crhoy.com,api.demo.cr,sitio.demo.cr,httpforever.com"
+
+# A donde van las consultas que no son nuestras.
+dnsExterno: "8.8.8.8"
 
 servicio:
   # LoadBalancer porque tiene que ser alcanzable desde fuera del cluster: es a

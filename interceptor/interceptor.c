@@ -12,6 +12,8 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include<netinet/in.h>
+#include <sys/time.h>
+#include <unistd.h>
 
 #include "../comun/http_cliente.h"
 #include "../comun/variables_entorno.h"
@@ -138,11 +140,97 @@ char *consultar_api(char *ruta, struct sockaddr_in cliaddr, const char *env_node
     return json;
 }
 
+
+/* Decide si el dominio consultado es de los nuestros.
+ *
+ * "propios" es una lista separada por comas, p.ej.
+ * "crhoy.com,api.demo.cr,sitio.demo.cr". Se compara sin distinguir mayusculas
+ * porque el DNS no las distingue.
+ *
+ * Tambien acepta los subdominios: una entrada "demo.cr" cubre "api.demo.cr".
+ * Se exige que el caracter anterior sea un punto, para que "nodemo.cr" no
+ * coincida con "demo.cr". */
+bool dominio_es_propio(const char *dominio, const char *propios) {
+    /* Lista vacia: se intercepta TODO, que es como funcionaba antes de existir
+     * esta variable. Devolver false aqui haria que un despliegue que no la
+     * define dejara de interceptar nada, en silencio. */
+    if (propios == NULL || *propios == '\0') return true;
+
+    size_t largo_dominio = strlen(dominio);
+    const char *inicio = propios;
+
+    while (*inicio != '\0') {
+        const char *coma = strchr(inicio, ',');
+        size_t largo = (coma != NULL) ? (size_t)(coma - inicio) : strlen(inicio);
+
+        if (largo > 0 && largo <= largo_dominio) {
+            const char *cola = dominio + largo_dominio - largo;
+            if (strncasecmp(cola, inicio, largo) == 0 &&
+                (cola == dominio || *(cola - 1) == '.')) {
+                return true;
+            }
+        }
+
+        if (coma == NULL) break;
+        inicio = coma + 1;
+    }
+    return false;
+}
+
+/* Reenvia la consulta tal cual a un servidor DNS de verdad y devuelve su
+ * respuesta tambien tal cual.
+ *
+ * No hace falta interpretar ni construir nada: el identificador de
+ * transaccion, las banderas y la seccion de pregunta ya viajan en esos bytes,
+ * asi que al cliente le llega algo perfectamente coherente.
+ *
+ * Devuelve cuantos bytes trajo la respuesta, o 0 si no se pudo. */
+ssize_t reenviar_consulta(const char *servidor, const char *consulta, size_t largo_consulta,
+                          char *respuesta, size_t max_respuesta) {
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        perror("socket (reenvio)");
+        return 0;
+    }
+
+    /* Sin este tope, un servidor que no conteste cuelga al interceptor entero:
+     * atiende de a una consulta por vez. */
+    struct timeval espera = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &espera, sizeof(espera));
+
+    struct sockaddr_in dns = {0};
+    dns.sin_family = AF_INET;
+    dns.sin_port = htons(53);
+    if (inet_pton(AF_INET, servidor, &dns.sin_addr) != 1) {
+        fprintf(stderr, "DNS_EXTERNO=\"%s\" no es una IPv4 valida\n", servidor);
+        close(fd);
+        return 0;
+    }
+
+    if (sendto(fd, consulta, largo_consulta, 0, (struct sockaddr*)&dns, sizeof(dns)) < 0) {
+        perror("sendto (reenvio)");
+        close(fd);
+        return 0;
+    }
+
+    ssize_t n = recvfrom(fd, respuesta, max_respuesta, 0, NULL, NULL);
+    if (n < 0) fprintf(stderr, "el DNS externo %s no respondio a tiempo\n", servidor);
+    close(fd);
+    return (n > 0) ? n : 0;
+}
+
 int main() {
     // Leer variables de entorno
     int env_puerto_dns_interceptor = env_entero("DNS_INTERCEPTOR_PORT", 5000);
     const char *env_node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
     int env_node_api_port = env_entero("NODE_API_PORT", 3000);
+
+    /* Dominios que administra esta plataforma, separados por comas. Cualquier
+     * otro se reenvia a DNS_EXTERNO, de modo que el interceptor se puede poner
+     * como resolvedor del sistema sin dejarlo sin internet. Vacio = se
+     * intercepta todo, que es como venia funcionando. */
+    const char *env_dominios_propios = env_texto("DOMINIOS_PROPIOS", "");
+    const char *env_dns_externo = env_texto("DNS_EXTERNO", "8.8.8.8");
 
     int listenfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (listenfd < 0) { perror("socket"); return 1; }
@@ -159,7 +247,9 @@ int main() {
     printf("Interceptor escuchando en el puerto %d\n", env_puerto_dns_interceptor);
 
     /* --- ciclo de atención --- */
-    char buffer[512];
+    /* 4096 y no 512: las respuestas de dominios reales, con varios registros
+     * o con EDNS, superan los 512 bytes y llegarian truncadas. */
+    char buffer[4096];
     struct sockaddr_in cliaddr;
 
     while (1) {
@@ -180,6 +270,23 @@ int main() {
         if (!qr && op_code == 0) {
             char *dominio = extraer_dominio(buffer);
             printf("%s\n", dominio);
+
+            /* Si el dominio no es nuestro, el interceptor no tiene nada que
+             * decir: se lo pasa a un DNS de verdad y devuelve su respuesta sin
+             * tocarla. Esto es lo que permite ponerlo como resolvedor del
+             * sistema sin romper el resto de internet. */
+            if (!dominio_es_propio(dominio, env_dominios_propios)) {
+                char reenvio[4096];
+                ssize_t largo_reenvio = reenviar_consulta(env_dns_externo, buffer, n,
+                                                          reenvio, sizeof(reenvio));
+                if (largo_reenvio > 0) {
+                    sendto(listenfd, reenvio, largo_reenvio, 0,
+                           (struct sockaddr*)&cliaddr, sizeof(cliaddr));
+                    printf("Reenviado a %s (%zd bytes)\n", env_dns_externo, largo_reenvio);
+                }
+                continue;
+            }
+
             
             // %%%%%%%%%%%%%%%%%%%% Consultar pais + ip del Cache Zonal (una sola llamada)
             char codigo_pais[3] = {0};
