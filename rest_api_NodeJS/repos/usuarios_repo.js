@@ -1,3 +1,4 @@
+import { FieldValue } from 'firebase-admin/firestore';
 import { db } from '../lib/firestore.js';
 import { hashear_contrasenna, verificar_contrasenna } from '../lib/password.js';
 
@@ -38,6 +39,27 @@ export async function autenticar_usuario(email, contrasenna) {
         email: doc.id,
         dominios: Array.isArray(u.dominios) ? u.dominios : [],
     };
+}
+
+/* El arreglo "dominios" del usuario es lo que decide la autenticacion por
+ * sesion: validar_sesion rechaza un dominio que no este en esa lista. Si al
+ * registrar un dominio no se actualiza aqui, el dueno recibe 401 en su propio
+ * sitio, y nada en el mensaje apunta a la causa.
+ *
+ * arrayUnion y arrayRemove se resuelven del lado del servidor, asi que son
+ * atomicos y idempotentes: dos registros simultaneos no se pisan, y registrar
+ * dos veces el mismo dominio no lo duplica. Leer el arreglo, modificarlo y
+ * escribirlo entero si tendria esas dos fallas. */
+export async function agregar_dominio_a_usuario(email, dominio) {
+    await db.collection('usuarios').doc(email).update({
+        dominios: FieldValue.arrayUnion(dominio),
+    });
+}
+
+export async function quitar_dominio_de_usuario(email, dominio) {
+    await db.collection('usuarios').doc(email).update({
+        dominios: FieldValue.arrayRemove(dominio),
+    });
 }
 
 export async function crear_usuario(email, contrasenna, dominios) {

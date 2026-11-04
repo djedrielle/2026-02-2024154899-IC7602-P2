@@ -7,7 +7,7 @@ replicas: 1
 
 imagen:
   # Cambiar PROYECTO por el de su Artifact Registry.
-  repositorio: us-central1-docker.pkg.dev/PROYECTO/redes/apache-origen
+  repositorio: us-central1-docker.pkg.dev/zonal-cache/redes/apache-origen
   etiqueta: "1.0.0"
   politicaDeDescarga: IfNotPresent
 

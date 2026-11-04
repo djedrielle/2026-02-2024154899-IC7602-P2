@@ -4,7 +4,7 @@
 replicas: 1
 
 imagen:
-  repositorio: us-central1-docker.pkg.dev/PROYECTO/redes/rest-api-java
+  repositorio: us-central1-docker.pkg.dev/zonal-cache/redes/rest-api-java
   etiqueta: "1.0.0"
   politicaDeDescarga: IfNotPresent
 

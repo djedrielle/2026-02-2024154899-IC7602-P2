@@ -5,7 +5,7 @@
 replicas: 1
 
 imagen:
-  repositorio: us-central1-docker.pkg.dev/PROYECTO/redes/zonal-cache
+  repositorio: us-central1-docker.pkg.dev/zonal-cache/redes/zonal-cache
   etiqueta: "1.0.0"
   politicaDeDescarga: IfNotPresent
 
@@ -34,7 +34,7 @@ limites:
   cantMaxReglas: 64
 
   # 1024 se queda corto para una peticion con cookies.
-  maxTamEntrada: 32768
+  maxTamEntrada: 65536
 
 nodeApi:
   host: zonal-cache-rest-api-nodejs.vercel.app

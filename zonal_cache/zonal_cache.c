@@ -410,9 +410,9 @@ char *respuesta_502(size_t *largo_salida) {
 char *consultar_node_api(const char *ruta) {
     // Leer variables de entorno
     const char *env_extra_headers = env_texto("EXTRA_HEADERS", "x-config-key: ABCDEFG\r\n");
-    const char *env_node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
-    int env_node_api_port = env_entero("NODE_API_PORT", 3000);
-    int env_node_api_tls = env_entero("NODE_API_TLS", 0);
+    const char *env_node_api_host = env_texto("NODE_API_HOST", "zonal-cache-rest-api-nodejs.vercel.app");
+    int env_node_api_port = env_entero("NODE_API_PORT", 443);
+    int env_node_api_tls = env_entero("NODE_API_TLS", 1);
     size_t largo_salida = 0;
 
     char buffer_from_int_to_char[20];
@@ -641,8 +641,8 @@ char *procesar_entrada(char* buffer_entrada, ConfigDominio *configs, int cantida
             free(respuesta_api);
         } else {
             // Leer variables de entorno
-            const char *env_node_api_host = env_texto("NODE_API_HOST", "127.0.0.1");
-            int env_ui_port = env_entero("UI_PORT", 3000);
+            const char *env_node_api_host = env_texto("NODE_API_HOST", "zonal-cache-rest-api-nodejs.vercel.app");
+            int env_ui_port = env_entero("UI_PORT", 443);
             char ruta_location[256];
             snprintf(ruta_location, sizeof(ruta_location), "https://%s:%d/login?redirect=%s%s", env_node_api_host, env_ui_port, host_completo, ruta);
             free(metodo);
@@ -1147,7 +1147,7 @@ int main(void) {
     int env_max_tam_entrada = env_entero("MAX_TAM_ENTRADA", 32768);
     int env_puerto_zonal_cache = env_entero("ZONAL_PUERTO_IN", 9777);
     int env_cant_max_dominios = env_entero("CANT_MAX_DOMINIOS", 16);
-    int env_cant_max_reglas = env_entero("CANT_MAX_REGLAS", 16);
+    int env_cant_max_reglas = env_entero("CANT_MAX_REGLAS", 32);
     const char *env_dir_cache = env_texto("CACHE_DIR", "cache");
     int env_TLS_habilitado = env_entero("TLS_HABILITADO", 0);
     const char *env_dir_certificado = env_texto("CERTIFICADO_DIR", "./cert.pem");

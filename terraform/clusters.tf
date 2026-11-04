@@ -41,7 +41,8 @@ resource "google_container_node_pool" "origenes" {
   node_count = var.nodos_por_cluster
 
   node_config {
-    machine_type = var.tipo_maquina
+    # e2-medium y no e2-small: ver el comentario de tipo_maquina_origenes.
+    machine_type = var.tipo_maquina_origenes
     disk_size_gb = var.disco_nodo_gb
     disk_type    = "pd-standard"
 

@@ -1,0 +1,40 @@
+# DNS Interceptor. Es el unico componente al que le llegan clientes reales por
+# su cuenta, asi que necesita IP publica y el puerto 53.
+
+replicas: 1
+
+imagen:
+  repositorio: us-central1-docker.pkg.dev/zonal-cache/redes/dns-interceptor
+  etiqueta: "1.0.0"
+  politicaDeDescarga: IfNotPresent
+
+# Puerto DENTRO del contenedor. Se deja sobre 1024 a proposito: asi el proceso
+# no necesita root ni la capacidad NET_BIND_SERVICE. El 53 lo publica el
+# Service, mas abajo.
+puertoInterno: 5000
+
+# API de Node en Vercel, que resuelve IP de cliente -> pais -> IP de la cache.
+# Se sirve solo por HTTPS, de ahi tls: true y puerto 443.
+nodeApi:
+  host: zonal-cache-rest-api-nodejs.vercel.app
+  puerto: 443
+  tls: true
+
+servicio:
+  # LoadBalancer porque tiene que ser alcanzable desde fuera del cluster: es a
+  # donde apunta el registro NS del dominio.
+  tipo: LoadBalancer
+  puerto: 53
+
+  # IP estatica reservada en GCP. Si se deja vacia, GCP asigna una efimera que
+  # cambia cada vez que se recrea el Service, y habria que actualizar el
+  # registro NS del dominio en cada despliegue.
+  ipEstatica: ""
+
+recursos:
+  requests:
+    cpu: 50m
+    memoria: 32Mi
+  limites:
+    cpu: 500m
+    memoria: 128Mi

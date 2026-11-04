@@ -76,29 +76,32 @@ spec:
               readOnly: true
             {{- end }}
 
-          # tcpSocket y no httpGet: la cache no tiene endpoint de salud, y
-          # pedirle "/" la haria consultar al origen en cada sondeo, llenando
-          # el cache de respuestas que nadie pidio.
+          # SIN readinessProbe NI livenessProbe, en ningun modo. No es un olvido.
           #
-          # El startupProbe existe porque la cache consulta /api/config al
-          # arrancar y no escucha hasta tener la configuracion cargada. Ese
-          # endpoint tarda segundos. Le damos hasta 60 s (20 x 3 s) antes de
-          # que empiecen a contar las otras sondas.
+          # La cache atiende UNA conexion a la vez: no hace fork ni usa hilos.
+          # Mientras consulta al origen (que puede tardar segundos) no llama a
+          # accept(), asi que las conexiones de las sondas se quedan en la cola
+          # del kernel y expiran. Kubernetes concluye que el proceso murio y lo
+          # reinicia EN MEDIO de la peticion que estaba atendiendo. El resultado
+          # es un bucle de reinicios que se dispara justo cuando hay trafico.
+          #
+          # Una sonda que mata al proceso por estar ocupado es peor que no
+          # tener sonda. El balanceador de GCP sigue comprobando la salud del
+          # NODO por su cuenta (tcp:10256, el healthz de kube-proxy), de modo
+          # que un nodo caido se saca de rotacion igual.
+          {{- if not .Values.tls.habilitado }}
+
+          # El startupProbe si se conserva cuando no hay TLS: corre antes de que
+          # exista trafico, asi que no compite con nadie, y retrasa la entrada al
+          # Service hasta que la cache termine de cargar /api/config y escuche de
+          # verdad. Con TLS no se puede: ninguna sonda de Kubernetes completa un
+          # saludo TLS, y el SSL_accept se quedaria bloqueado esperandolo.
           startupProbe:
             tcpSocket:
               port: cache
             periodSeconds: 3
             failureThreshold: 20
-
-          readinessProbe:
-            tcpSocket:
-              port: cache
-            periodSeconds: 10
-
-          livenessProbe:
-            tcpSocket:
-              port: cache
-            periodSeconds: 20
+          {{- end }}
 
           resources:
             requests:

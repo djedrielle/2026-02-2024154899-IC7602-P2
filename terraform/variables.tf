@@ -34,9 +34,28 @@ variable "caches" {
 }
 
 variable "tipo_maquina" {
-  description = "Tipo de maquina de los nodos"
+  description = "Tipo de maquina de los nodos de las caches zonales"
   type        = string
   default     = "e2-small"
+}
+
+# El cluster de origenes necesita mas memoria que los de cache.
+#
+# Medido sobre un nodo e2-small real: de 2 GB de capacidad, GKE deja 1.36 GiB
+# asignables, y sus propios complementos (fluentbit, kube-dns, metrics-server,
+# gke-metrics-agent, filestore, pdcsi y demas) reservan ~1.2 GiB. Quedan unos
+# 67 MiB libres.
+#
+# Apache y el interceptor caben ahi porque piden 32Mi cada uno. La JVM no: con
+# 128Mi ya no entra, y el pod se queda en Pending con "Insufficient memory".
+#
+# e2-medium son 4 GB, que dejan cerca de 3 GiB asignables. Cuesta unos $12 mas
+# al mes que e2-small, lo mismo que agregar un segundo e2-small, pero sin pagar
+# dos veces los DaemonSets de sistema.
+variable "tipo_maquina_origenes" {
+  description = "Tipo de maquina del cluster de origenes, que corre la JVM"
+  type        = string
+  default     = "e2-medium"
 }
 
 variable "nodos_por_cluster" {

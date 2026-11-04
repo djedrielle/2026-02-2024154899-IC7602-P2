@@ -5,7 +5,7 @@
 # Tras instalar, la IP de este Service se carga en Firestore bajo el pais BR.
 
 imagen:
-  repositorio: us-central1-docker.pkg.dev/PROYECTO/redes/zonal-cache
+  repositorio: us-central1-docker.pkg.dev/zonal-cache/redes/zonal-cache
   etiqueta: "1.0.0"
 
 servicio:

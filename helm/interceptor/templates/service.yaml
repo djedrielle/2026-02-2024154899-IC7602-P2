@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-interceptor
+  labels:
+    app: {{ .Release.Name }}-interceptor
+spec:
+  type: {{ .Values.servicio.tipo }}
+
+  {{- if .Values.servicio.ipEstatica }}
+  # Solo se emite la clave si hay valor. Un loadBalancerIP vacio es un error de
+  # validacion, no un "sin preferencia".
+  loadBalancerIP: {{ .Values.servicio.ipEstatica }}
+  {{- end }}
+
+  selector:
+    app: {{ .Release.Name }}-interceptor
+
+  ports:
+    - name: dns
+      # Aqui esta la traduccion que evita necesitar privilegios: el mundo ve el
+      # 53, el contenedor escucha en el 5000. El mapeo lo hace Kubernetes.
+      port: {{ .Values.servicio.puerto }}
+      targetPort: dns
+      # protocol: UDP es obligatorio. El valor por defecto es TCP, y con el las
+      # consultas DNS no llegarian nunca sin ningun error visible.
+      protocol: UDP
+
+# Una vez desplegado, la IP asignada se consulta con:
+#
+#     kubectl get svc {{ .Release.Name }}-interceptor
+#
+# Esa IP es la que va en el registro NS del dominio en FreeDNS.
